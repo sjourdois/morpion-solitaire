@@ -1739,12 +1739,14 @@ impl eframe::App for MorpionApp {
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
+                    // Non-breaking spaces inside the copyright so egui never wraps
+                    // in the middle of the name (epaint treats U+00A0 as unbreakable).
                     ui.weak(concat!(
                         "v",
                         env!("CARGO_PKG_VERSION"),
                         " · ",
                         env!("CARGO_PKG_LICENSE"),
-                        " · © Stéphane Jourdois"
+                        " · ©\u{a0}Stéphane\u{a0}Jourdois"
                     ));
                     ui.hyperlink_to(fl!(l, "link-docs"), "https://morpion-solitaire.io/docs/");
                     ui.hyperlink_to(
