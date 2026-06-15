@@ -106,6 +106,5 @@ exhausted-body = Der Spielbaum wurde in { $time } vollständig durchsucht. Das b
 status-no-msr-data = Diese Datei enthält keine Morpion-Solitaire-Daten.
 status-copied-png-no-record = Bild kopiert (ohne eingebetteten Datensatz — als PNG-Datei exportieren, um ihn einzuschließen).
 drop-hint = Ziehen Sie eine .msr-, .png- oder .svg-Datei hierher, um sie zu laden
-link-play = Spielen
 link-docs = Doku
 link-source = Quelltext

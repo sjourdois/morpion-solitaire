@@ -1,6 +1,6 @@
 [package]
 name = "morpion-solitaire"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 # No MSRV pledge for the application (it tracks current stable). The reusable
 # `morpion-solitaire-record` library does declare one.
@@ -53,6 +53,21 @@ resvg = "0.44"          # rasterise the SVG renderer to PNG (CLI `show --png`)
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 arboard = "3"
 
-# No wasm-specific dependencies: the library carries no browser API. The wasm
-# entry point and its web deps (including the getrandom "js" backend for `rand`)
-# live entirely in the `morpion-solitaire-wasm` crate.
+# The browser build needs a tiny slice of the web platform for "save to file"
+# (no OS dialog/filesystem exists): a `Blob` downloaded via a synthetic anchor.
+# Everything else web-specific (the entry point, the getrandom "js" backend) lives
+# in the `morpion-solitaire-wasm` crate.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    "Window",
+    "Document",
+    "Element",
+    "Node",
+    "HtmlElement",
+    "HtmlAnchorElement",
+] }

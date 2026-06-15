@@ -299,8 +299,7 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
         {
             out.copy = true;
         }
-        // File export needs a native save dialog; the web build copies instead.
-        #[cfg(not(target_arch = "wasm32"))]
+        // Save to a file: a native save dialog, or a browser download on the web.
         if icons::icon_button(ui, Icon::Export, false, true)
             .on_hover_text(format!(
                 "{} ({}S)",

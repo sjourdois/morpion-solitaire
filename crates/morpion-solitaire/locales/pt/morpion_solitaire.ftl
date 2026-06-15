@@ -106,6 +106,5 @@ exhausted-body = A árvore de jogo foi explorada exaustivamente em { $time }. A 
 status-no-msr-data = Este ficheiro não contém dados de Morpion Solitaire.
 status-copied-png-no-record = Imagem copiada (sem o registo incorporado — exporte para um ficheiro PNG para o incluir).
 drop-hint = Largue um ficheiro .msr, .png ou .svg para o carregar
-link-play = Jogar
 link-docs = Docs
 link-source = Código

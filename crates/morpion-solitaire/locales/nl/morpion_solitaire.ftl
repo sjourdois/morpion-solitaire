@@ -106,6 +106,5 @@ exhausted-body = De spelboom is volledig doorzocht in { $time }. De beste score,
 status-no-msr-data = Dit bestand bevat geen Morpion Solitaire-gegevens.
 status-copied-png-no-record = Afbeelding gekopieerd (zonder het ingesloten record — exporteer naar een PNG-bestand om het op te nemen).
 drop-hint = Sleep een .msr-, .png- of .svg-bestand hierheen om het te laden
-link-play = Spelen
 link-docs = Docs
 link-source = Broncode
