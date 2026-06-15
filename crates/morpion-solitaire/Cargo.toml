@@ -1,6 +1,6 @@
 [package]
 name = "morpion-solitaire"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # No MSRV pledge for the application (it tracks current stable). The reusable
 # `morpion-solitaire-record` library does declare one.
@@ -8,6 +8,7 @@ description = "Morpion Solitaire: a GUI + headless solver (NRPA, perturbation, e
 repository = "https://github.com/sjourdois/morpion-solitaire"
 homepage = "https://morpion-solitaire.io"
 license = "GPL-3.0-or-later"
+readme = "README.md"
 keywords = ["morpion-solitaire", "puzzle", "solver", "nrpa", "egui"]
 categories = ["games", "mathematics", "wasm"]
 
