@@ -25,6 +25,7 @@ btn-silence = 🔔 REKORD GEBROCHEN — Stumm
 load-record = Rekord laden
 nodes-explored-label = Untersuchte Knoten
 nodes-per-second-label = Knoten/s
+wasm-rate-disclaimer = Browser-Version: nativ läuft um ein Vielfaches schneller (Rate nicht vergleichbar)
 time-label = Zeit
 records-label = Rekorde
 btn-load-best = Ergebnis laden

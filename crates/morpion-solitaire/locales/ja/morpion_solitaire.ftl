@@ -25,6 +25,7 @@ btn-silence = 🔔 記録更新 — 消音
 load-record = 記録を読み込む
 nodes-explored-label = 探索ノード数
 nodes-per-second-label = ノード/秒
+wasm-rate-disclaimer = ブラウザ版：ネイティブは数倍高速（この値はネイティブと比較不可）
 time-label = 時間
 records-label = 記録
 btn-load-best = 結果を読み込む

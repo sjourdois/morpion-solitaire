@@ -513,6 +513,17 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
                     fl!(l, "nodes-per-second-label"),
                     format_rate(input.nodes_per_sec)
                 ));
+                // The browser build is markedly slower than native (no OS threads,
+                // wasm execution overhead), so its node rate must not be read as a
+                // native figure. The factor is machine/browser-dependent — keep it
+                // qualitative rather than printing a misleading exact multiplier.
+                #[cfg(target_arch = "wasm32")]
+                ui.label(
+                    RichText::new(fl!(l, "wasm-rate-disclaimer"))
+                        .weak()
+                        .italics()
+                        .small(),
+                );
             }
             if !input.records.is_empty() {
                 ui.add_space(4.0);

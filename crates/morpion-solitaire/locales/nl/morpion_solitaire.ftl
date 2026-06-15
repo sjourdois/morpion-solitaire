@@ -25,6 +25,7 @@ btn-silence = 🔔 RECORD VERBROKEN — Dempen
 load-record = Een record laden
 nodes-explored-label = Onderzochte knopen
 nodes-per-second-label = Knopen/s
+wasm-rate-disclaimer = Browserversie: native is meerdere × sneller (snelheid niet vergelijkbaar)
 time-label = Tijd
 records-label = Records
 btn-load-best = Resultaat laden
