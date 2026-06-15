@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "morpion-solitaire"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -2352,6 +2352,7 @@ dependencies = [
  "env_logger",
  "i18n-embed",
  "i18n-embed-fl",
+ "js-sys",
  "log",
  "miniz_oxide",
  "morpion-solitaire-record",
@@ -2366,6 +2367,8 @@ dependencies = [
  "serde_json",
  "sys-locale",
  "unic-langid",
+ "wasm-bindgen",
+ "web-sys",
  "web-time",
 ]
 

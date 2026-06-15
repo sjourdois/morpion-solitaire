@@ -166,10 +166,10 @@ struct EditorialMeta {
 }
 
 /// A manual export the user asked for, possibly deferred behind the author prompt.
+/// `File` saves to a file on native (a save dialog) and downloads in the browser.
 #[derive(Clone, Copy)]
 enum ExportAction {
     Copy,
-    #[cfg(not(target_arch = "wasm32"))]
     File,
 }
 
@@ -622,10 +622,46 @@ impl MorpionApp {
     fn perform_export(&mut self, action: ExportAction, ctx: &egui::Context) {
         match action {
             ExportAction::Copy => self.copy_to_clipboard(ctx),
-            #[cfg(not(target_arch = "wasm32"))]
             ExportAction::File => {
-                self.export_to_file();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.export_to_file();
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = ctx;
+                    self.download_to_browser();
+                }
             }
+        }
+    }
+
+    /// Save the current export to a file the browser downloads (the web build's
+    /// equivalent of the native save dialog). Binary PNG has no wasm rasteriser,
+    /// so it stays native-only; everything else is text.
+    #[cfg(target_arch = "wasm32")]
+    fn download_to_browser(&mut self) {
+        let l = &*LANGUAGE_LOADER;
+        if self.export_format == ExportFormat::Png {
+            self.status = Some(fl!(l, "status-png-web"));
+            return;
+        }
+        let ext = match self.export_format {
+            ExportFormat::Msr => "msr",
+            ExportFormat::Json => "json",
+            ExportFormat::Pentasol => "psol",
+            ExportFormat::Svg => "svg",
+            ExportFormat::Png => "png", // unreachable (handled above)
+        };
+        let name = format!("morpion-{}.{ext}", self.displayed_state().score());
+        match self.export_text(self.export_format) {
+            Ok(text) => {
+                self.status = Some(match browser_download(&name, text.as_bytes()) {
+                    Ok(()) => fl!(l, "status-exported", path = name),
+                    Err(e) => fl!(l, "status-import-error", error = e),
+                });
+            }
+            Err(e) => self.status = Some(fl!(l, "status-import-error", error = e)),
         }
     }
 
@@ -1289,6 +1325,17 @@ impl eframe::App for MorpionApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Keep egui's theme in step with `dark_mode`. eframe can apply the
+        // platform/browser theme over the choice made in `new()`, which would
+        // desync the menu (egui visuals) from the board (which follows
+        // `dark_mode`); reassert it here, cheaply — only when it has drifted.
+        if ctx.style().visuals.dark_mode != self.dark_mode {
+            ctx.set_visuals(if self.dark_mode {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+        }
         // Repaint every frame while search is running so stats stay live.
         if self.search_running() {
             ctx.request_repaint();
@@ -1588,7 +1635,6 @@ impl eframe::App for MorpionApp {
                 if out.copy {
                     self.request_export(ExportAction::Copy, ui.ctx());
                 }
-                #[cfg(not(target_arch = "wasm32"))]
                 if out.export_file {
                     self.request_export(ExportAction::File, ui.ctx());
                 }
@@ -1687,14 +1733,19 @@ impl eframe::App for MorpionApp {
                     ui.label(egui::RichText::new(status).italics().weak());
                 }
 
-                // Footer: app version + relevant links (native and web alike).
+                // Footer: version · licence · copyright, then the relevant links.
                 let l = &*LANGUAGE_LOADER;
                 ui.add_space(8.0);
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
-                    ui.hyperlink_to(fl!(l, "link-play"), "https://morpion-solitaire.io");
+                    ui.weak(concat!(
+                        "v",
+                        env!("CARGO_PKG_VERSION"),
+                        " · ",
+                        env!("CARGO_PKG_LICENSE"),
+                        " · © Stéphane Jourdois"
+                    ));
                     ui.hyperlink_to(fl!(l, "link-docs"), "https://morpion-solitaire.io/docs/");
                     ui.hyperlink_to(
                         fl!(l, "link-source"),
@@ -1913,4 +1964,39 @@ fn load_saved_bests() -> std::collections::HashMap<&'static str, u32> {
     {
         std::collections::HashMap::new() // no filesystem on the web
     }
+}
+
+/// Trigger a browser download of `bytes` as `filename`: build a `Blob`, point a
+/// throwaway `<a download>` at it, click it, then revoke the object URL. This is
+/// the web build's stand-in for the native save dialog.
+#[cfg(target_arch = "wasm32")]
+fn browser_download(filename: &str, bytes: &[u8]) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    let doc = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or("no document")?;
+    let body = doc.body().ok_or("no document body")?;
+
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("application/octet-stream");
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts)
+        .map_err(|_| "could not build the file blob".to_owned())?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "object URL failed".to_owned())?;
+
+    let anchor = doc
+        .create_element("a")
+        .and_then(|e| {
+            e.dyn_into::<web_sys::HtmlAnchorElement>()
+                .map_err(Into::into)
+        })
+        .map_err(|_| "could not build the download link".to_owned())?;
+    anchor.set_href(&url);
+    anchor.set_download(filename);
+    let _ = body.append_child(&anchor);
+    anchor.click();
+    let _ = body.remove_child(&anchor);
+    web_sys::Url::revoke_object_url(&url).ok();
+    Ok(())
 }

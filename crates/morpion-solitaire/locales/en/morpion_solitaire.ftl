@@ -106,6 +106,5 @@ exhausted-body = The game tree was explored exhaustively in { $time }. The best 
 status-no-msr-data = This file contains no Morpion Solitaire data.
 status-copied-png-no-record = Image copied (without the embedded record — export to a PNG file to include it).
 drop-hint = Drop a .msr, .png or .svg file to load it
-link-play = Play
 link-docs = Docs
 link-source = Source
