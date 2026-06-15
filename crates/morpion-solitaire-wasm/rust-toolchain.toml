@@ -1,0 +1,13 @@
+# The threaded WebAssembly build is the only thing that needs nightly: it
+# rebuilds `std` with the wasm atomics target-feature (`-Z build-std`, see
+# `.cargo/config.toml` in this directory) for shared-memory threads.
+#
+# This file scopes nightly to THIS crate, so it is selected automatically when
+# you build from here (e.g. `trunk build --release` or
+# `cargo build --target wasm32-unknown-unknown`). The rest of the workspace
+# builds, tests, clippy and rustfmt on whatever toolchain you default to —
+# stable is recommended. `rust-src` and the wasm target are auto-installed.
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]
+targets = ["wasm32-unknown-unknown"]

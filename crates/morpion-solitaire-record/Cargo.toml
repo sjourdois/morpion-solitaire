@@ -1,0 +1,25 @@
+[package]
+name = "morpion-solitaire-record"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "MSR — a self-describing interchange format for Morpion Solitaire games (reader, writer, validator). Implements the MSR 0.1 specification."
+documentation = "https://docs.rs/morpion-solitaire-record"
+homepage = "https://morpion-solitaire.io"
+repository = "https://github.com/sjourdois/morpion-solitaire"
+readme = "README.md"
+keywords = ["morpion-solitaire", "format", "puzzle", "serialization"]
+categories = ["encoding", "game-development", "parser-implementations"]
+license = "MIT OR Apache-2.0"
+
+# Published as `morpion-solitaire-record` (the bare name `msr` is taken on
+# crates.io), but the library is imported as `msr` for ergonomics: dependents
+# write `morpion-solitaire-record = "0.1"` and `use msr::Record;`.
+[lib]
+name = "msr"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+miniz_oxide = "0.8"

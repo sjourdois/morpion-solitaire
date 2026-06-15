@@ -1,0 +1,111 @@
+app-title = Morpion Solitaire
+variant-label = Variant
+score-label = Zetten
+legal-moves-label = Beschikbaar
+algo-label = Algoritme
+nrpa-level-label = NRPA-niveau
+nrpa-level-hint = 3 = snel (~99 in een minuut); 4+ zoekt dieper maar loont alleen bij runs van meerdere uren
+algo-nrpa = NRPA
+algo-beam = Beam Search
+algo-systematic = Systematisch
+algo-perturbation = Perturbatie
+perturbation-hint = Optimaliseert het geladen spel lokaal: verwijder de laatste K zetten, zoek het einde opnieuw, houd het beste, in een lus. Laad eerst een record en laat het lopen.
+btn-start = Start
+btn-stop = Stop
+btn-undo = Ongedaan maken
+btn-redo = Opnieuw
+btn-new = Nieuw spel
+btn-import = Importeren
+btn-rotate = Draaien
+btn-flip = Spiegelen
+btn-recenter = Centreren
+btn-arrows = Pijlen
+btn-numbers = Nummers
+btn-silence = 🔔 RECORD VERBROKEN — Dempen
+load-record = Een record laden
+nodes-explored-label = Onderzochte knopen
+nodes-per-second-label = Knopen/s
+time-label = Tijd
+records-label = Records
+btn-load-best = Resultaat laden
+btn-dismiss-preview = Negeren
+btn-checkpoint = Zoekopdracht opslaan
+btn-resume-search = Zoekopdracht hervatten
+language-label = Taal
+btn-load = Laden
+btn-cancel = Annuleren
+import-hint = Plak een opslag (JSON of Pentasol):
+status-copied = Positie naar klembord gekopieerd
+status-imported = Geïmporteerd: {$score} zetten
+status-import-error = Ongeldige import: {$error}
+status-record-saved = Record {$score} opgeslagen: {$path}
+status-record-save-error = Record opslaan mislukt: {$error}
+status-record-web = Record {$score} bereikt
+status-checkpoint = Zoekopdracht opgeslagen
+status-resumed = Zoekopdracht hervat
+status-no-checkpoint = Geen opgeslagen zoekopdracht
+status-search-paused = ⏸ Zoekopdracht gepauzeerd
+status-search-resumed = ▶ Zoekopdracht hervat
+status-record-beaten = 🔔 RECORD VERBROKEN: {$score} zetten (5T-wereldrecord = {$record})!
+status-overflow = ⚠ RASTEROVERLOOP {$grid}×{$grid} (bereikt bij {$score} zetten) — zoekopdracht gestopt, beste spel opgeslagen onder records/overflow/. Verbreed `Row` in board.rs om het raster te vergroten.
+
+# ── CLI-runtimeberichten ───────────────────────────────────────────────────
+btn-pause = Pauze
+btn-resume = Hervatten
+start-point-label = Beginpunt
+start-empty = Leeg kruis
+start-seeded = Leeg kruis, voorbereid met het geladen spel
+start-continue = Geladen spel voortzetten
+start-needs-game = Laad of speel eerst een spel.
+resume-saved = Opgeslagen
+format-label = Exportformaat
+btn-copy = Kopiëren
+btn-export-file = Exporteren…
+status-exported = Geëxporteerd: { $path }
+status-png-web = Afbeeldingsklembord is niet beschikbaar op het web.
+start-terminal = Het geladen spel is afgelopen — niets te verkennen.
+search-section = Automatisch zoeken
+variant-tip = Lijnen van { $len } punten · { $mode }
+touch-touching = gedeelde eindpunten toegestaan
+touch-disjoint = disjuncte lijnen
+game-section = Spel
+btn-theme = Licht / donker thema
+btn-shortcuts = Sneltoetsen
+shortcuts-title = Sneltoetsen
+searching-label = Zoeken…
+confirm-discard-title = Niet-opgeslagen wijzigingen
+confirm-discard-body = Huidig spel opslaan?
+btn-save = Opslaan
+btn-dont-save = Niet opslaan
+rules-title = Regels
+rules-hide = Niet tonen bij opstarten
+btn-close = Sluiten
+rules-body =
+    Doel: de langst mogelijke reeks zetten maken.
+    Het speelveld begint als een kruis van punten. Een zet plaatst een punt op een leeg vakje, mits daarmee 5 uitgelijnde vakjes (horizontaal, verticaal of diagonaal) compleet worden waarvan de andere 4 al punten zijn; je trekt dan de lijn door die 5 punten.
+    Het ingevulde vakje mag aan een uiteinde of in het midden van de lijn liggen. (In de 4-varianten zijn het 4 uitgelijnde vakjes: 3 punten plus 1.)
+    Twee lijnen in dezelfde richting mogen elkaar nooit overlappen. In de disjuncte (D) varianten mogen ze elkaar zelfs niet aan een uiteinde raken; in de rakende (T) varianten mogen ze één uiteinde delen.
+    Mogelijke zetten zijn gemarkeerd — klik om te spelen, of laat de computer zoeken via Automatisch zoeken.
+
+meta-title = Metagegevens
+meta-author = Auteur
+meta-source = Bron
+meta-transcribed-by = Getranscribeerd door
+meta-description = Beschrijving
+meta-tags = Labels
+meta-tags-hint = door kommas gescheiden
+author-prompt-title = Uw naam
+author-prompt-body = Voer uw naam in om uw exports te ondertekenen (veld “Auteur”).
+author-prompt-remember = Mij onthouden
+author-prompt-ok = Opslaan
+author-prompt-skip = Overslaan
+
+exhausted-title = Hele ruimte doorzocht
+exhausted-body = De spelboom is volledig doorzocht in { $time }. De beste score, { $score }, is daarmee het bewezen optimum voor deze variant.
+
+status-no-msr-data = Dit bestand bevat geen Morpion Solitaire-gegevens.
+status-copied-png-no-record = Afbeelding gekopieerd (zonder het ingesloten record — exporteer naar een PNG-bestand om het op te nemen).
+drop-hint = Sleep een .msr-, .png- of .svg-bestand hierheen om het te laden
+link-play = Spelen
+link-docs = Docs
+link-source = Broncode

@@ -1,0 +1,16 @@
+# A standalone crate (its own empty [workspace]) used only by the MSRV CI job to
+# verify the two reusable libraries build on their pledged MSRV (Rust 1.74). It
+# is kept out of the main workspace so it resolves its own lockfile — the
+# workspace lockfile is a newer format than 1.74's cargo can parse, and the
+# application deliberately tracks current stable rather than pledging an MSRV.
+[package]
+name = "msrv-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+msr = { package = "morpion-solitaire-record", path = "../../crates/morpion-solitaire-record" }
+morpion-solitaire-records = { path = "../../crates/morpion-solitaire-records" }

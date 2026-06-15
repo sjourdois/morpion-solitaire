@@ -1,0 +1,21 @@
+[package]
+name = "morpion-solitaire-records"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "A curated corpus of Morpion Solitaire record games, embedded as MSR records."
+documentation = "https://docs.rs/morpion-solitaire-records"
+homepage = "https://morpion-solitaire.io"
+repository = "https://github.com/sjourdois/morpion-solitaire"
+readme = "README.md"
+keywords = ["morpion-solitaire", "records", "corpus", "puzzle"]
+categories = ["games"]
+license = "MIT OR Apache-2.0"
+
+# No dependencies: the records are embedded as MSR strings. Decode them with the
+# `morpion-solitaire-record` crate (`msr::decode`) if you need typed records.
+[dependencies]
+
+# Only for the conformance test (every record decodes and validates).
+[dev-dependencies]
+morpion-solitaire-record = { path = "../morpion-solitaire-record", version = "0.1" }

@@ -1,0 +1,17 @@
+# Virtual workspace root. The crates live under `crates/`:
+#   crates/morpion-solitaire         — the GUI + CLI application (GPL-3.0-or-later)
+#   crates/morpion-solitaire-record  — the MSR format library (MIT OR Apache-2.0)
+#
+# `default-members` keeps bare `cargo run` / `cargo build` aimed at the app; use
+# `cargo test --workspace` (and `--workspace` in CI) to cover both crates.
+[workspace]
+members = ["crates/*"]
+default-members = ["crates/morpion-solitaire"]
+resolver = "2"
+
+# Profiles must live in the workspace root for a virtual manifest.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

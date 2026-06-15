@@ -1,0 +1,14 @@
+# GitHub reads this file to render the "Sponsor" button on the repository.
+# Fill in the handles you actually use and delete the rest. Docs:
+# https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+# GitHub Sponsors (one username, or a list). Requires enrolling the account.
+github: [sjourdois]
+liberapay: sjourdois
+ko_fi: sjourdois
+
+# Other platforms (uncomment and fill the ones you use):
+# patreon: your_handle
+# buy_me_a_coffee: your_handle
+# open_collective: morpion-solitaire
+# custom: ["https://example.org/donate"]  # up to four arbitrary URLs

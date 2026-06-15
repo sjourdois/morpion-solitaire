@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://morpion-solitaire.io/spec/0.1/msr.schema.json",
+  "title": "MSR 0.1 — Morpion Solitaire Record",
+  "description": "Self-describing record for a Morpion Solitaire game. See docs/spec/0.1/msr.md. This schema validates the JSON form (the compact MS1: envelope decompresses to the same JSON).",
+  "type": "object",
+  "required": ["variant", "score", "moves"],
+  "additionalProperties": true,
+  "properties": {
+    "version": {
+      "description": "Format version, major.minor. \"0.1\" for this spec (a bare integer is accepted for backward compatibility).",
+      "type": ["string", "integer"],
+      "default": "0.1"
+    },
+    "variant": {
+      "description": "Variant code, digit first.",
+      "type": "string",
+      "enum": ["4T", "4D", "5T", "5D"]
+    },
+    "score": {
+      "description": "Number of moves (equals moves.length).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "moves": {
+      "description": "Moves in play order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/move" }
+    },
+    "producer": {
+      "description": "Program that wrote the file, e.g. \"morpion-solitaire/0.1.0\".",
+      "type": "string"
+    },
+    "available_moves": {
+      "description": "Legal moves available at the final position (0 means terminal).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "terminal": {
+      "description": "Whether the final position is terminal.",
+      "type": "boolean"
+    },
+    "bbox": {
+      "description": "Bounding box of all placed points: [min_x, min_y, max_x, max_y].",
+      "type": "array",
+      "items": { "type": "integer" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "saved_at": {
+      "description": "ISO-8601 UTC save timestamp.",
+      "type": "string"
+    },
+    "description": { "type": "string" },
+    "author": {
+      "description": "Who set the record (person/team/handle).",
+      "type": "string"
+    },
+    "source": {
+      "description": "Where the game originates: a URL or citation (e.g. the original record site or an imported Pentasol file).",
+      "type": "string"
+    },
+    "transcribed_by": {
+      "description": "Who transcribed the game into MSR form (curator/project), distinct from source and author.",
+      "type": "string"
+    },
+    "tags": {
+      "description": "Free-form labels.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "solver": {
+      "description": "Automated-search provenance; present only for solver-produced games.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "tool": {
+          "description": "The search tool/engine that produced the game (name or brand, e.g. \"morpion-solitaire.io\"). Distinct from the file-level producer.",
+          "type": "string"
+        },
+        "method": {
+          "description": "Algorithm and parameters, e.g. \"nrpa L3\". Does not restate the seed.",
+          "type": "string"
+        },
+        "seed": {
+          "description": "RNG seed, for reproducibility.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "nodes_explored": {
+          "description": "Search effort in nodes.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "elapsed_secs": {
+          "description": "Wall-clock seconds of the producing search.",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "move": {
+      "type": "object",
+      "required": ["x", "y", "dir", "pos"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "description": "X of the new point.", "type": "integer" },
+        "y": { "description": "Y of the new point.", "type": "integer" },
+        "dir": {
+          "description": "Direction code.",
+          "type": "string",
+          "enum": ["H", "V", "DP", "DN"]
+        },
+        "pos": {
+          "description": "Index of the new point within the line (0..line_len).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        }
+      }
+    }
+  }
+}

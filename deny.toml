@@ -1,0 +1,45 @@
+# cargo-deny configuration — supply-chain gate run in CI
+# (advisories, license allow-list, source allow-list). See https://embark.dev.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # proc-macro-error2 is flagged unmaintained, but it is only a build-time,
+    # transitive dependency of i18n-embed-fl (no vulnerability, and no safe
+    # upgrade exists yet). Revisit when i18n-embed drops it.
+    { id = "RUSTSEC-2026-0173", reason = "unmaintained build-time transitive dep of i18n-embed-fl; no fix available yet" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Permissive licenses for the dependency tree, plus GPL-3.0-or-later for this
+# project's own application crates. cargo-deny checks each crate's declared
+# license is on this list; it does not judge compatibility (the app is GPL and
+# may depend on the permissive libraries — see the repo's licensing note).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",       # Boost — clipboard-win/error-code (via arboard)
+    "Unicode-3.0",
+    "MPL-2.0",       # file-level copyleft — resvg/usvg, used unmodified
+    "OFL-1.1",       # epaint's bundled fonts
+    "LicenseRef-UFL-1.0", # Ubuntu Font Licence — epaint_default_fonts
+    "GPL-3.0-or-later",   # this project's own application crates
+]
+
+[bans]
+# Duplicate versions are common in large graphs; surface them without failing.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,89 @@
+name: Deploy site
+
+# Builds and deploys https://morpion-solitaire.io:
+#   /        the landing page (web/index.html)
+#   /play/   the WebAssembly app (trunk build)
+#   /docs/   the mdBook documentation
+#   /spec/   the versioned MSR specification (stable URLs, e.g. /spec/0.1/)
+#
+# Requires the repo to have Pages enabled with "GitHub Actions" as the source
+# (Settings → Pages) and the custom domain set to morpion-solitaire.io.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight deploy at a time; don't cancel a running one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nightly is needed only for the threaded wasm build (-Z build-std); the
+      # wasm crate's rust-toolchain.toml selects it when building from there.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+
+      # trunk (WASM bundler) and mdBook. These convenience actions can be
+      # swapped for a pinned binary download if you prefer fewer dependencies.
+      - uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+
+      - name: Build the web app (served under /play/)
+        working-directory: crates/morpion-solitaire-wasm
+        run: trunk build --release --public-url /play/
+
+      # Generate every record format (.json/.msr/.png/.svg/.psol) from the JSON
+      # corpus and publish them under /records/; copy the rendered PNGs into the
+      # docs so the mdBook record gallery can show them.
+      - name: Generate record artifacts
+        run: |
+          mkdir -p _site/records
+          cargo run --release -p morpion-solitaire --example gen_record_artifacts -- _site/records
+          mkdir -p docs/src/reference/images
+          cp _site/records/*.png docs/src/reference/images/
+
+      - name: Build the documentation
+        run: mdbook build docs
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/play _site/docs _site/spec
+          cp -r web/. _site/
+          cp -r crates/morpion-solitaire-wasm/dist/. _site/play/
+          cp -r docs/book/. _site/docs/
+          cp -r docs/spec/. _site/spec/
+          echo 'morpion-solitaire.io' > _site/CNAME
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

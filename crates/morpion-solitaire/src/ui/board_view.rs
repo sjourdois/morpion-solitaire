@@ -1,0 +1,379 @@
+use crate::game::{board::Pos, line::Dir, moves::Move, rules::TouchMode, state::GameState};
+use egui::{Color32, Pos2, Sense, Stroke, Ui, Vec2};
+
+const CELL_PAD: f32 = 1.6;
+
+// Palette shared with the SVG/PNG renderer (`crate::render`): a light board with
+// black cross dots, white numbered move circles, and saturated per-direction lines.
+const BG: Color32 = Color32::from_rgb(0xf7, 0xf7, 0xf4);
+const INK: Color32 = Color32::from_rgb(0x15, 0x16, 0x1c);
+const WHITE: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+const GOLD: Color32 = Color32::from_rgb(0xff, 0xd2, 0x3f);
+
+/// Apply the current view orientation (purely cosmetic D4 transform) to a grid
+/// coordinate: an optional horizontal flip followed by `rot` quarter-turns.
+fn view_pos(rot: u8, flip: bool, (x, y): Pos) -> Pos {
+    let (x, y) = if flip { (-x, y) } else { (x, y) };
+    match rot % 4 {
+        0 => (x, y),
+        1 => (-y, x),
+        2 => (-x, -y),
+        _ => (y, -x),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn show(
+    ui: &mut Ui,
+    state: &GameState,
+    legal: &[Move],
+    hovered: &mut Option<Move>,
+    view_rot: u8,
+    view_flip: bool,
+    view_arrows: bool,
+    view_numbers: bool,
+    show_legal: bool,
+    view_zoom: &mut f32,
+    view_pan: &mut Vec2,
+    dark: bool,
+) -> Option<Move> {
+    let available = ui.available_rect_before_wrap();
+    let vt = |p: Pos| view_pos(view_rot, view_flip, p);
+
+    // Board palette follows the UI theme. `ink` is outlines / cross dots /
+    // numbers; `played_fill` fills the move circles (so they read as rings).
+    let (bg, ink, played_fill) = if dark {
+        (
+            Color32::from_rgb(0x1b, 0x1c, 0x22),
+            Color32::from_rgb(0xe6, 0xe6, 0xe9),
+            Color32::from_rgb(0x2a, 0x2b, 0x33),
+        )
+    } else {
+        (BG, INK, WHITE)
+    };
+
+    let (omin_x, omin_y, omax_x, omax_y) = state.bounding_box().unwrap_or((-5, -4, 6, 5));
+    let corners = [
+        vt((omin_x, omin_y)),
+        vt((omin_x, omax_y)),
+        vt((omax_x, omin_y)),
+        vt((omax_x, omax_y)),
+    ];
+    let min_x = corners.iter().map(|c| c.0).min().unwrap();
+    let max_x = corners.iter().map(|c| c.0).max().unwrap();
+    let min_y = corners.iter().map(|c| c.1).min().unwrap();
+    let max_y = corners.iter().map(|c| c.1).max().unwrap();
+
+    let span_x = (max_x - min_x + 1) as f32 + 2.0 * CELL_PAD;
+    let span_y = (max_y - min_y + 1) as f32 + 2.0 * CELL_PAD;
+
+    let (resp, painter) = ui.allocate_painter(available.size(), Sense::click_and_drag());
+
+    // Scroll wheel selects the line at the hovered point (when several complete
+    // there — see below); hold Ctrl/Cmd or Shift to zoom toward the cursor
+    // instead. Drag pans. Plain scroll over a single-line or empty spot does
+    // nothing.
+    let (scroll, zoom_mod) = ui.input(|i| {
+        let m = i.modifiers;
+        (i.raw_scroll_delta.y, m.ctrl || m.shift || m.command)
+    });
+    let cycle_scroll = if resp.hovered() && !zoom_mod {
+        scroll
+    } else {
+        0.0
+    };
+    if resp.hovered() && zoom_mod && scroll != 0.0 {
+        let factor = (scroll * 0.0015).exp();
+        let new_zoom = (*view_zoom * factor).clamp(0.4, 12.0);
+        // Keep the point under the cursor fixed while zooming.
+        if let Some(p) = resp.hover_pos() {
+            let c = available.center().to_vec2() + *view_pan;
+            *view_pan += (p.to_vec2() - c) * (1.0 - new_zoom / *view_zoom);
+        }
+        *view_zoom = new_zoom;
+    }
+    if resp.dragged() {
+        *view_pan += resp.drag_delta();
+    }
+
+    let fit = (available.width() / span_x).min(available.height() / span_y);
+    let cell_size = (fit * *view_zoom).max(3.0);
+    let cx = available.center().x + view_pan.x;
+    let cy = available.center().y + view_pan.y;
+    let board_cx = (min_x as f32 + max_x as f32) / 2.0;
+    let board_cy = (min_y as f32 + max_y as f32) / 2.0;
+
+    let to_screen = |pos: Pos| -> Pos2 {
+        let p = vt(pos);
+        Pos2::new(
+            cx + (p.0 as f32 - board_cx) * cell_size,
+            cy + (p.1 as f32 - board_cy) * cell_size,
+        )
+    };
+
+    painter.rect_filled(available, 0.0, bg);
+
+    let line_w = (cell_size * 0.085).max(1.2);
+    let dot_r = (cell_size * 0.26).max(2.6);
+
+    // Drawn lines (full segments, saturated per-direction colour).
+    for mv in &state.history {
+        let pts: Vec<Pos2> = mv
+            .line
+            .positions(state.variant.len())
+            .map(&to_screen)
+            .collect();
+        let c = dir_color(mv.line.dir, 255);
+        for w in pts.windows(2) {
+            painter.line_segment([w[0], w[1]], Stroke::new(line_w, c));
+        }
+    }
+
+    // Per move, in the line's colour: a talon (perpendicular tick) tangent to EACH
+    // of the line's two end dots (so the full span always shows and collinear lines
+    // that share a point stay distinguishable), and a direction triangle at the
+    // move's OWN circle pointing along the line.
+    let n = state.variant.len() as i16;
+    let mid = (state.variant.len() as usize - 1) / 2;
+    if view_arrows {
+        for mv in &state.history {
+            let (dx, dy) = mv.line.dir.delta();
+            let (tdx, tdy) = vt((dx, dy));
+            let len = ((tdx * tdx + tdy * tdy) as f32).sqrt().max(1.0);
+            let (ux, uy) = (tdx as f32 / len, tdy as f32 / len);
+            let (perpx, perpy) = (-uy, ux);
+            let color = dir_color(mv.line.dir, 255);
+
+            // Talons at both ends, each tangent to its dot. They exist to keep
+            // collinear lines that *share* an endpoint distinguishable, which can
+            // only happen in Touching variants; in Disjoint variants lines never
+            // touch, so the talons are pure clutter and are omitted. Skip an end
+            // only when this move's own triangle sits there (line_pos 0 = origin,
+            // n-1 = far).
+            if matches!(state.variant.touch_mode, TouchMode::Touching) {
+                let origin = mv.line.origin;
+                let far = (origin.0 + (n - 1) * dx, origin.1 + (n - 1) * dy);
+                let lp = mv.line_pos as i16;
+                let tw = 0.22 * cell_size;
+                for (end, into, at) in [(origin, 1.0f32, 0i16), (far, -1.0f32, n - 1)] {
+                    if lp == at {
+                        continue;
+                    }
+                    let e = to_screen(end);
+                    let (tx, ty) = (e.x + into * ux * dot_r, e.y + into * uy * dot_r);
+                    painter.line_segment(
+                        [
+                            Pos2::new(tx + perpx * tw, ty + perpy * tw),
+                            Pos2::new(tx - perpx * tw, ty - perpy * tw),
+                        ],
+                        Stroke::new((line_w * 2.0).max(2.0), color),
+                    );
+                }
+            }
+
+            // Direction triangle at the move's own circle (tangent, interior side).
+            let sgn = if (mv.line_pos as usize) <= mid {
+                1.0
+            } else {
+                -1.0
+            };
+            let m = to_screen(mv.pos);
+            let (bx, by) = (m.x + sgn * ux * dot_r, m.y + sgn * uy * dot_r);
+            let (tlen, hw) = (0.30 * cell_size, 0.18 * cell_size);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(bx + sgn * ux * tlen, by + sgn * uy * tlen),
+                    Pos2::new(bx + perpx * hw, by + perpy * hw),
+                    Pos2::new(bx - perpx * hw, by - perpy * hw),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+    }
+
+    // Hovered move: pick the legal move whose point is nearest the cursor; when
+    // several legal moves complete at that same point (two valid directions),
+    // disambiguate by the cursor's offset from the point — aim slightly toward the
+    // line you want and the best-aligned direction is selected.
+    let hover_pos = resp.hover_pos();
+    // Nearest legal point under the cursor (within half a cell).
+    let nearest_pos = hover_pos.and_then(|hp| {
+        legal
+            .iter()
+            .map(|mv| (mv.pos, to_screen(mv.pos).distance(hp)))
+            .filter(|(_, d)| *d < cell_size * 0.5)
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(pos, _)| pos)
+    });
+    // Pick among the moves completing at the nearest point. The cursor aims (max
+    // reach toward a line's cells), which resolves directions and the two
+    // *extreme* collinear lines. But a point can carry up to 5 collinear lines and
+    // aiming can never reach the middle ones, so right-click cycles through all of
+    // them; the aimed line is the default. Each candidate is drawn faintly so the
+    // choice is visible, with an `i/N` indicator.
+    *hovered = None;
+    if let (Some(hp), Some(pos)) = (hover_pos, nearest_pos) {
+        let pt = to_screen(pos);
+        let off = hp - pt;
+        let mut cands: Vec<Move> = legal.iter().filter(|m| m.pos == pos).copied().collect();
+        cands.sort_by_key(|m| (m.line.dir.delta(), m.line.origin));
+
+        if cands.len() >= 2 {
+            // Thinner than the real drawn lines (line_w ≈ 0.085·cell) so the
+            // candidates read clearly as hints, not as played lines.
+            let sw = (cell_size * 0.045).max(1.0);
+            for mv in &cands {
+                let pts: Vec<Pos2> = mv
+                    .line
+                    .positions(state.variant.len())
+                    .map(&to_screen)
+                    .collect();
+                let col = dir_color(mv.line.dir, 70);
+                for w in pts.windows(2) {
+                    painter.line_segment([w[0], w[1]], Stroke::new(sw, col));
+                }
+            }
+        }
+
+        // Cursor-aimed default index.
+        let aim = |mv: &Move| {
+            mv.line
+                .positions(state.variant.len())
+                .map(|c| {
+                    let s = to_screen(c);
+                    off.x * (s.x - pt.x) + off.y * (s.y - pt.y)
+                })
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let aim_idx = (0..cands.len())
+            .max_by(|&i, &j| aim(&cands[i]).partial_cmp(&aim(&cands[j])).unwrap())
+            .unwrap_or(0);
+
+        // Per-point cycle selection (None = follow the cursor aim); the scroll
+        // wheel advances it through all candidates at this point. Scroll is
+        // accumulated so one wheel notch (or a deliberate trackpad swipe) = one
+        // step, regardless of device resolution.
+        let id = egui::Id::new("hover_cycle_sel");
+        let prev: Option<(Pos, Option<usize>, f32)> = ui.ctx().memory(|m| m.data.get_temp(id));
+        let (mut sel, mut accum) = match prev {
+            Some((p, s, a)) if p == pos => (s, a),
+            _ => (None, 0.0),
+        };
+        if cands.len() >= 2 && cycle_scroll != 0.0 {
+            const STEP: f32 = 40.0;
+            let n = cands.len();
+            accum += cycle_scroll;
+            while accum >= STEP {
+                sel = Some((sel.unwrap_or(aim_idx) + 1) % n);
+                accum -= STEP;
+            }
+            while accum <= -STEP {
+                sel = Some((sel.unwrap_or(aim_idx) + n - 1) % n);
+                accum += STEP;
+            }
+        }
+        ui.ctx()
+            .memory_mut(|m| m.data.insert_temp(id, (pos, sel, accum)));
+
+        let active = sel.unwrap_or(aim_idx).min(cands.len().saturating_sub(1));
+        *hovered = cands.get(active).copied();
+
+        if cands.len() >= 2 {
+            painter.text(
+                pt + egui::vec2(dot_r + 2.0, -dot_r - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{}/{}", active + 1, cands.len()),
+                egui::FontId::proportional((cell_size * 0.26).max(9.0)),
+                ink,
+            );
+        }
+    }
+
+    // Preview the hovered line (bright, on top of any faint stubs).
+    if let Some(mv) = *hovered {
+        let pts: Vec<Pos2> = mv
+            .line
+            .positions(state.variant.len())
+            .map(&to_screen)
+            .collect();
+        let c = dir_color(mv.line.dir, 150);
+        let pw = (cell_size * 0.16).max(2.0);
+        for w in pts.windows(2) {
+            painter.line_segment([w[0], w[1]], Stroke::new(pw, c));
+        }
+        painter.circle_filled(
+            to_screen(mv.pos),
+            (cell_size * 0.22).max(4.0),
+            Color32::from_rgb(0x2f, 0x9e, 0x44),
+        );
+    }
+
+    // Legal-move markers (non-hovered). Hidden when the toggle is off — then a
+    // move only reveals itself on hover, via the preview above.
+    if show_legal {
+        let mr = (cell_size * 0.18).max(3.0);
+        for &mv in legal {
+            if Some(mv) == *hovered {
+                continue;
+            }
+            painter.circle_stroke(
+                to_screen(mv.pos),
+                mr,
+                Stroke::new(1.5_f32, Color32::from_rgba_unmultiplied(47, 158, 68, 130)),
+            );
+        }
+    }
+
+    // Points: black cross dots, white move circles, gold last move — all the same
+    // size with a thin ink outline (matching the renderer).
+    let last_pos = state.history.last().map(|m| m.pos);
+    let played: std::collections::HashSet<_> = state.history.iter().map(|m| m.pos).collect();
+    let outline = Stroke::new((line_w * 0.9).max(1.0), ink);
+    for &cell in &state.board.cells {
+        let sp = to_screen(cell);
+        let fill = if last_pos == Some(cell) {
+            GOLD
+        } else if played.contains(&cell) {
+            played_fill
+        } else {
+            ink // initial cross
+        };
+        painter.circle(sp, dot_r, fill, outline);
+    }
+
+    // Move numbers on each played point (1-based play order).
+    if view_numbers {
+        let fsize = (cell_size * 0.30).max(5.0);
+        let font = egui::FontId::proportional(fsize);
+        for (i, mv) in state.history.iter().enumerate() {
+            painter.text(
+                to_screen(mv.pos),
+                egui::Align2::CENTER_CENTER,
+                (i + 1).to_string(),
+                font.clone(),
+                ink,
+            );
+        }
+    }
+
+    if resp.clicked() {
+        if let Some(mv) = *hovered {
+            return Some(mv);
+        }
+    }
+
+    None
+}
+
+/// Per-direction line colours (matching `crate::render`), with an alpha for the
+/// hover preview.
+fn dir_color(dir: Dir, alpha: u8) -> Color32 {
+    let (r, g, b) = match dir {
+        Dir::H => (0x3b, 0x62, 0xc4),  // blue
+        Dir::V => (0xc8, 0x63, 0x2e),  // terracotta
+        Dir::DP => (0x2f, 0x9e, 0x44), // green
+        Dir::DN => (0xb5, 0x35, 0x9c), // magenta
+    };
+    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}

@@ -1,0 +1,51 @@
+name: Release
+
+# Publishes the three crates to crates.io when a `v*` tag is pushed.
+#
+# Authentication uses crates.io **Trusted Publishing** (OIDC) — no token is
+# stored in the repository. Each published crate must have a Trusted Publisher
+# configured on crates.io pointing at this repo, the workflow **filename**
+# `release.yml` (filename only, no directory) and the `release` environment:
+#   - morpion-solitaire-record
+#   - morpion-solitaire-records
+#   - morpion-solitaire
+#
+# The `release` environment also gates the job behind a manual approval
+# (Settings → Environments → release → required reviewers), so pushing a tag
+# never publishes without a human click.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # required for the crates.io OIDC token exchange
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    environment: release # manual-approval gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Exchange the GitHub OIDC token for a short-lived crates.io token.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # Publish in dependency order. Recent cargo waits for each crate to appear
+      # in the index before returning, so the next publish can resolve it.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          cargo publish -p morpion-solitaire-record
+          cargo publish -p morpion-solitaire-records
+          cargo publish -p morpion-solitaire

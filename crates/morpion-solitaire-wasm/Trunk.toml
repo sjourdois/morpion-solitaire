@@ -1,0 +1,13 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+port = 8080
+open = false
+headers = {"Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "require-corp"}
+
+[[hooks]]
+stage = "post_build"
+command = "bash"
+command_arguments = ["./patch-worker.sh"]

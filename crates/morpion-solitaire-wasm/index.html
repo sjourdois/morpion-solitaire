@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+    <title>Morpion Solitaire</title>
+    <style>
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
+        canvas { display: block; width: 100%; height: 100%; }
+    </style>
+
+    <!--
+        COI service worker — injects Cross-Origin-Opener-Policy and
+        Cross-Origin-Embedder-Policy headers so that SharedArrayBuffer is
+        available on static hosts (e.g. GitHub Pages) that don't send them.
+        Must be loaded before the WASM bundle.
+    -->
+    <script src="coi-serviceworker.js"></script>
+</head>
+<body>
+    <canvas id="the_canvas_id"></canvas>
+    <link data-trunk rel="rust" data-target-name="morpion_solitaire_wasm" data-integrity="none"
+          data-wasm-opt-params="--all-features"/>
+    <link data-trunk rel="copy-file" href="coi-serviceworker.js"/>
+</body>
+</html>

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Format, lint and test on stable (the default toolchain for everything but
+  # the WebAssembly build).
+  check:
+    name: fmt · clippy · test (stable)
+    runs-on: ubuntu-latest
+    # Deny warnings via env here. The wasm atomics rustflags live in the wasm
+    # crate's own .cargo/config.toml and only apply when building from that
+    # crate, so this host build/clippy/test is unaffected.
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --all
+      - name: Docs
+        run: cargo doc --no-deps --workspace
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # The threaded browser build is the only thing that needs nightly (it rebuilds
+  # std with the wasm atomics target-feature via -Z build-std). Nightly and the
+  # build-std config are scoped to the wasm crate (its own rust-toolchain.toml +
+  # .cargo/config.toml), so building from that directory selects them.
+  wasm:
+    name: build (wasm32, nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (shared-memory threads)
+        working-directory: crates/morpion-solitaire-wasm
+        run: cargo build --target wasm32-unknown-unknown --release
+
+  # Verify the two reusable libraries still build on their pledged MSRV. They are
+  # checked in isolation (a standalone crate under tools/) because the workspace
+  # lockfile is a newer format than 1.74's cargo, and the application tracks
+  # current stable rather than pledging an MSRV.
+  msrv:
+    name: MSRV · libraries on 1.74
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.74.0
+      - uses: Swatinem/rust-cache@v2
+      - working-directory: tools/msrv-check
+        run: cargo build
+
+  # Supply-chain gate: security advisories, the license allow-list, and the
+  # crate-source allow-list (see deny.toml).
+  deny:
+    name: cargo-deny · advisories · licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/sjourdois/morpion-solitaire/discussions
+    about: Ask a question, share a record, or discuss an idea.
+  - name: Security vulnerability
+    url: https://github.com/sjourdois/morpion-solitaire/security/advisories/new
+    about: Report a vulnerability privately (please do not open a public issue).

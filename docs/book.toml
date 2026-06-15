@@ -1,0 +1,23 @@
+[book]
+title = "Morpion Solitaire"
+authors = ["Stéphane Jourdois"]
+description = "Guide, MSR format specification, and internals of the Morpion Solitaire solver."
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/sjourdois/morpion-solitaire"
+edit-url-template = "https://github.com/sjourdois/morpion-solitaire/edit/main/docs/{path}"
+default-theme = "navy"
+# Note: in production the book is served under /docs/ on the project site (the
+# app lives at the apex). `site-url` is set at deploy time, not here, so local
+# preview (`mdbook serve`, served at /) keeps absolute links working:
+#   MDBOOK_OUTPUT__HTML__SITE_URL=/docs/ mdbook build docs
+
+[output.html.fold]
+enable = true
+level = 1
+
+# Optional preprocessors (install before enabling):
+#   mdbook-mermaid    diagrams        (cargo install mdbook-mermaid)
+#   mdbook-linkcheck  broken links    (cargo install mdbook-linkcheck)

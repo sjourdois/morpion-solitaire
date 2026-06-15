@@ -1,0 +1,51 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug! Please fill in what you can.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - GUI (desktop)
+        - GUI (web / WebAssembly)
+        - CLI
+        - msr format library
+        - Solver / search
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: Steps to reproduce, expected vs. actual behaviour.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release version or `git rev-parse --short HEAD`.
+    validations:
+      required: false
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS and, for the web build, the browser.
+      placeholder: e.g. Linux + Firefox 130
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / attachments
+      description: Console output, a backtrace, or a `.msr` file that triggers it.
+      render: shell
+    validations:
+      required: false

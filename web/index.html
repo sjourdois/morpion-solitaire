@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Morpion Solitaire — player & solver</title>
+  <meta name="description" content="A fast Morpion Solitaire player and solver: play in your browser, hunt records with NRPA/exhaustive search, and read/write the self-describing MSR record format."/>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 1.5rem; padding: 2rem;
+      background: radial-gradient(1200px 800px at 50% -10%, #25264a, #14142a 60%);
+      color: #e6e6e9; text-align: center;
+      font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    h1 { font-size: clamp(2.2rem, 6vw, 3.6rem); margin: 0; letter-spacing: .5px; }
+    .tagline { max-width: 42rem; color: #b9b9c6; margin: 0; }
+    .play {
+      display: inline-block; margin-top: .5rem; padding: .85rem 2.4rem;
+      font-size: 1.15rem; font-weight: 600; text-decoration: none;
+      color: #14142a; background: #8ad; border-radius: 999px;
+      box-shadow: 0 6px 24px rgba(136,170,221,.35); transition: transform .1s ease;
+    }
+    .play:hover { transform: translateY(-2px); }
+    nav { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: center; }
+    nav a { color: #9bd; text-decoration: none; border-bottom: 1px solid transparent; }
+    nav a:hover { border-bottom-color: #9bd; }
+    .meta { color: #7c7c8c; font-size: .9rem; max-width: 40rem; }
+    code { background: #2a2b3c; padding: .1em .4em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Morpion&nbsp;Solitaire</h1>
+  <p class="tagline">
+    A fast player and solver. Play the four standard variants in your browser,
+    hunt records with several search engines (NRPA, large-neighbourhood
+    perturbation, exhaustive), and read or write <strong>MSR</strong> — a
+    self-describing record format meant to supersede Pentasol.
+  </p>
+
+  <a class="play" href="play/">▶ Play in your browser</a>
+
+  <nav>
+    <a href="docs/">Documentation</a>
+    <a href="docs/format/spec.html">MSR spec</a>
+    <a href="https://github.com/sjourdois/morpion-solitaire">Source (GitHub)</a>
+    <a href="https://crates.io/crates/morpion-solitaire">crates.io</a>
+  </nav>
+
+  <p class="meta">
+    The 5T world record is <strong>178</strong>; 4T (62) and 4D (35) are solved.
+    The web build runs multi-threaded WebAssembly. Free software — the app is
+    GPL-3.0-or-later, the <code>msr</code> format library is MIT&nbsp;OR&nbsp;Apache-2.0.
+  </p>
+</body>
+</html>
