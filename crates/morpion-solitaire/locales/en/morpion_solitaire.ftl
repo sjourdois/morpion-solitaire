@@ -25,6 +25,7 @@ btn-silence = 🔔 RECORD BEATEN — Silence
 load-record = Load a record
 nodes-explored-label = Nodes explored
 nodes-per-second-label = Nodes/s
+wasm-rate-disclaimer = Browser build: native runs several × faster (rate not comparable)
 time-label = Time
 records-label = Records
 btn-load-best = Load result
