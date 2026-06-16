@@ -7,16 +7,27 @@ All notable changes to this project are documented here. The format is based on
 ## [0.1.4] — 2026-06-16
 
 Maintenance release: same application as 0.1.3, re-tagged to ship the pre-built
-binaries. The 0.1.3 binary release could not be completed — its assets only
-build on the (now retired) Intel macOS runner, and the partly-published release
-left the `v0.1.3` tag unusable for a GitHub Release.
+binaries with verifiable provenance. The 0.1.3 binary release could not be
+completed — its assets only build on the (now retired) Intel macOS runner, and
+the partly-published release left the `v0.1.3` tag unusable for a GitHub Release.
+
+### Added
+
+- Release assets now ship a `SHA256SUMS` file and **SLSA build-provenance
+  attestations**, signed keyless via Sigstore. Verify a download with
+  `gh attestation verify <file> --repo sjourdois/morpion-solitaire`.
+
+### Changed
+
+- Release binaries are published as **bare executables** (a raw binary on Unix —
+  `chmod +x` after download — and a `.exe` on Windows) instead of single-file
+  `.tar.gz` / `.zip` archives.
 
 ### Fixed
 
-- The release-binaries workflow now cross-compiles the macOS Intel build on the
-  Apple Silicon runner (no Intel runner needed), so all four targets — Linux
-  (x86_64), macOS (Intel + Apple Silicon) and Windows (x86_64) — publish
-  reliably.
+- The release-binaries workflow cross-compiles the macOS Intel build on the Apple
+  Silicon runner (no Intel runner needed), so all four targets — Linux (x86_64),
+  macOS (Intel + Apple Silicon) and Windows (x86_64) — publish reliably.
 
 ## [0.1.3] — 2026-06-16
 
