@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-06-16
+
+Maintenance release: same application as 0.1.3, re-tagged to ship the pre-built
+binaries. The 0.1.3 binary release could not be completed — its assets only
+build on the (now retired) Intel macOS runner, and the partly-published release
+left the `v0.1.3` tag unusable for a GitHub Release.
+
+### Fixed
+
+- The release-binaries workflow now cross-compiles the macOS Intel build on the
+  Apple Silicon runner (no Intel runner needed), so all four targets — Linux
+  (x86_64), macOS (Intel + Apple Silicon) and Windows (x86_64) — publish
+  reliably.
+
 ## [0.1.3] — 2026-06-16
 
 ### Added
@@ -39,6 +53,7 @@ All notable changes to this project are documented here. The format is based on
 - Touch input on phones and tablets (the canvas treated taps as scroll/zoom), and
   the controls panel is now usable on narrow screens.
 
+[0.1.4]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.3
 
 ## [0.1.2] — 2026-06-15
