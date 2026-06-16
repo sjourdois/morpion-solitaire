@@ -27,9 +27,23 @@ older Pentasol text format.
 ## Install
 
 **Pre-built binaries** for Linux (x86_64), macOS (Intel & Apple Silicon) and
-Windows are attached to every
-[release](https://github.com/sjourdois/morpion-solitaire/releases/latest) — just
-download, unpack and run.
+Windows (x86_64) are attached to every
+[release](https://github.com/sjourdois/morpion-solitaire/releases/latest). Each
+asset is the bare executable:
+
+- **Linux / macOS** — download the file for your platform, then
+  `chmod +x morpion-solitaire-* && ./morpion-solitaire-*`.
+- **Windows** — download and run the `.exe`.
+- **macOS** binaries are not notarized yet, so Gatekeeper warns on first launch:
+  right-click → **Open**, or `xattr -d com.apple.quarantine <file>`.
+
+Every release also ships a `SHA256SUMS` file and signed build-provenance
+attestations. To check a download:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify <file> --repo sjourdois/morpion-solitaire
+```
 
 Or build from crates.io (the GUI and CLI):
 
