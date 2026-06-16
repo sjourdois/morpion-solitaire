@@ -1,14 +1,15 @@
 name: Release binaries
 
 # On a `v*` tag, build the native GUI + CLI binary (`morpion-solitaire`) for the
-# common desktop targets and attach them to the GitHub Release (created if it
-# does not exist yet). This is independent of `release.yml`, which publishes the
-# crates to crates.io.
+# common desktop targets and attach the bare executables to the GitHub Release
+# (created if it does not exist yet), together with a `SHA256SUMS` file and SLSA
+# build-provenance attestations. This is independent of `release.yml`, which
+# publishes the crates to crates.io.
 #
 # It can also be dispatched by hand for an existing tag (e.g. to (re)build assets
 # after a CI fix when the tag itself is protected and cannot be moved): run it
-# from the default branch and pass the tag in the `tag` input. The job then
-# checks out that tag's source but uses this (fixed) workflow definition.
+# from the default branch and pass the tag in the `tag` input. The jobs then
+# check out that tag's source but use this (fixed) workflow definition.
 
 on:
   push:
@@ -16,20 +17,24 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build assets for, e.g. v0.1.3"
+        description: "Existing tag to (re)build assets for, e.g. v0.1.4"
         required: true
 
-permissions:
-  contents: write # create/update the GitHub Release and upload assets
+permissions: {} # granted per job (least privilege)
 
 concurrency:
   group: release-binaries-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # Build each target and hand the bare executable to the publish job as an
+  # artifact. Keeping the upload in a single downstream job gives one clean
+  # SHA256SUMS and avoids the matrix racing to create the Release.
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     # On a tag push this is the tag itself; on a manual dispatch it is the input.
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
@@ -57,10 +62,10 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p morpion-solitaire --bin morpion-solitaire --target ${{ matrix.target }}
 
-      # Publish the bare executable, renamed after the tag and target so the
-      # release assets are unambiguous. No archive: each asset is a single file.
-      # Note: GitHub release assets don't carry a permission bit, so on Unix the
-      # downloaded binary needs `chmod +x` before running (documented in README).
+      # Bare executable, renamed after the tag and target so the assets are
+      # unambiguous. No archive: each asset is a single file. (GitHub assets
+      # carry no permission bit, so the Unix download needs `chmod +x` — this is
+      # documented in the README.)
       - name: Stage binary (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -74,8 +79,46 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/morpion-solitaire.exe" `
             "morpion-solitaire-${env:TAG}-${{ matrix.name }}.exe"
 
-      - name: Attach to the GitHub Release
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: morpion-solitaire-${{ env.TAG }}-${{ matrix.name }}*
+          if-no-files-found: error
+
+  # Collect the binaries, generate checksums, sign (keyless SLSA provenance via
+  # Sigstore) and attach everything to the Release in one shot.
+  release:
+    name: Sign & publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/update the Release and upload assets
+      id-token: write # Sigstore OIDC for the build-provenance attestations
+      attestations: write # record the provenance attestations
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Collect binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum morpion-solitaire-* | tee SHA256SUMS
+
+      # Free, keyless supply-chain signing: SLSA build provenance via Sigstore.
+      # Verify a download with:
+      #   gh attestation verify <file> --repo ${{ github.repository }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+
+      - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG }} # the release to create/update (matches the asset names)
-          files: morpion-solitaire-${{ env.TAG }}-${{ matrix.name }}*
+          tag_name: ${{ env.TAG }} # the release to create/update
+          files: dist/*
