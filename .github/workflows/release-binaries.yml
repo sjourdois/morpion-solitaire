@@ -57,23 +57,25 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p morpion-solitaire --bin morpion-solitaire --target ${{ matrix.target }}
 
-      # Package the single binary as tar.gz (Unix) or zip (Windows), named after
-      # the tag and target so release assets are unambiguous.
-      - name: Package (Unix)
+      # Publish the bare executable, renamed after the tag and target so the
+      # release assets are unambiguous. No archive: each asset is a single file.
+      # Note: GitHub release assets don't carry a permission bit, so on Unix the
+      # downloaded binary needs `chmod +x` before running (documented in README).
+      - name: Stage binary (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          dir="target/${{ matrix.target }}/release"
-          tar -C "$dir" -czf "morpion-solitaire-${TAG}-${{ matrix.name }}.tar.gz" morpion-solitaire
-      - name: Package (Windows)
+          cp "target/${{ matrix.target }}/release/morpion-solitaire" \
+            "morpion-solitaire-${TAG}-${{ matrix.name }}"
+      - name: Stage binary (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/morpion-solitaire.exe" `
-            -DestinationPath "morpion-solitaire-${env:TAG}-${{ matrix.name }}.zip"
+          Copy-Item "target/${{ matrix.target }}/release/morpion-solitaire.exe" `
+            "morpion-solitaire-${env:TAG}-${{ matrix.name }}.exe"
 
       - name: Attach to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }} # the release to create/update (matches the asset names)
-          files: morpion-solitaire-${{ env.TAG }}-${{ matrix.name }}.*
+          files: morpion-solitaire-${{ env.TAG }}-${{ matrix.name }}*
