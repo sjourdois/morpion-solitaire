@@ -26,7 +26,9 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: linux-x86_64 }
-          - { os: macos-13, target: x86_64-apple-darwin, name: macos-x86_64 }
+          # Cross-compiled from the Apple Silicon runner: the macOS Xcode SDK is
+          # universal, so no (scarce) Intel runner is needed.
+          - { os: macos-latest, target: x86_64-apple-darwin, name: macos-x86_64 }
           - { os: macos-latest, target: aarch64-apple-darwin, name: macos-aarch64 }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, name: windows-x86_64 }
     steps:
