@@ -14,9 +14,9 @@
 //! | DP  | `x + y`   | `x`      |
 //! | DN  | `x − y`   | `x`      |
 //!
-//! With `GRID = 128`, a track holds at most 128 positions, so each track is a
-//! single `u128`: the conflict window becomes one bit-mask test, and the exact
-//! duplicate check is subsumed (a same-origin line sets the bit at its own
+//! A track holds at most `GRID` positions (the board side length), so each track
+//! is a single `Row` word: the conflict window becomes one bit-mask test, and the
+//! exact duplicate check is subsumed (a same-origin line sets the bit at its own
 //! position, i.e. distance 0). Line origins live in the same fixed grid as the
 //! board, so this never overflows for a game the board itself accepts.
 

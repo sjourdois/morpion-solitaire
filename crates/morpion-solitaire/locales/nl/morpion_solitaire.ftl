@@ -109,3 +109,10 @@ status-copied-png-no-record = Afbeelding gekopieerd (zonder het ingesloten recor
 drop-hint = Sleep een .msr-, .png- of .svg-bestand hierheen om het te laden
 link-docs = Docs
 link-source = Broncode
+
+# Line picker mode (Aim = cursor + scroll wheel, Click = click to lock + aim + click to play)
+pick-mode-label = Keuze
+pick-mode-aim = Richten
+pick-mode-click = Klik
+pick-mode-aim-hint = Richt met de cursor, scrollwiel wisselt de lijn, klik om te spelen.
+pick-mode-click-hint = Klik om het punt te vergrendelen, beweeg om te richten, klik nogmaals om te spelen.

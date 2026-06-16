@@ -30,7 +30,7 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",       # file-level copyleft — resvg/usvg, used unmodified
     "OFL-1.1",       # epaint's bundled fonts
-    "LicenseRef-UFL-1.0", # Ubuntu Font Licence — epaint_default_fonts
+    "Ubuntu-font-1.0", # Ubuntu Font Licence — epaint_default_fonts (egui's bundled fonts)
     "GPL-3.0-or-later",   # this project's own application crates
 ]
 

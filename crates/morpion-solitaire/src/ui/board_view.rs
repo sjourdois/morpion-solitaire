@@ -22,6 +22,18 @@ fn view_pos(rot: u8, flip: bool, (x, y): Pos) -> Pos {
     }
 }
 
+/// How the player resolves several collinear lines that complete at one point.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InputMode {
+    /// Cursor aim picks the line; the scroll wheel cycles the collinear
+    /// candidates; a single click plays.
+    Aim,
+    /// Click a point to lock it into line-choice (the dot turns orange), move the
+    /// cursor to aim the line among the collinear candidates, then click again to
+    /// play it. Escape cancels. (Mouse-oriented; touch may want a future mode.)
+    Click,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -33,6 +45,7 @@ pub fn show(
     view_arrows: bool,
     view_numbers: bool,
     show_legal: bool,
+    mode: InputMode,
     view_zoom: &mut f32,
     view_pan: &mut Vec2,
     dark: bool,
@@ -75,7 +88,7 @@ pub fn show(
     // nothing.
     let (scroll, zoom_mod) = ui.input(|i| {
         let m = i.modifiers;
-        (i.raw_scroll_delta.y, m.ctrl || m.shift || m.command)
+        (i.smooth_scroll_delta.y, m.ctrl || m.shift || m.command)
     });
     let cycle_scroll = if resp.hovered() && !zoom_mod {
         scroll
@@ -206,18 +219,31 @@ pub fn show(
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .map(|(pos, _)| pos)
     });
-    // Pick among the moves completing at the nearest point. The cursor aims (max
-    // reach toward a line's cells), which resolves directions and the two
-    // *extreme* collinear lines. But a point can carry up to 5 collinear lines and
-    // aiming can never reach the middle ones, so right-click cycles through all of
-    // them; the aimed line is the default. Each candidate is drawn faintly so the
-    // choice is visible, with an `i/N` indicator.
+    // Resolve which legal line to preview/play. Several collinear lines can
+    // complete at one point; the cursor's offset from the point aims among them,
+    // each drawn faintly with an `i/N` indicator. In Click mode the first click
+    // locks the point so you can aim by moving the cursor, then play with a second.
     *hovered = None;
-    if let (Some(hp), Some(pos)) = (hover_pos, nearest_pos) {
+    let mut to_play: Option<Move> = None;
+    // True while a Click-mode point is locked into line-choice (drives the orange
+    // "not committed yet" dot in the preview below).
+    let mut tap_selecting = false;
+    // Click mode persists the locked point in egui temp memory as Option<Pos>.
+    let lock_id = egui::Id::new("line_pick_lock");
+    let locked: Option<Pos> = if mode == InputMode::Click {
+        ui.ctx()
+            .memory(|m| m.data.get_temp::<Option<Pos>>(lock_id))
+            .flatten()
+            .filter(|lp| legal.iter().filter(|m| m.pos == *lp).count() >= 2)
+    } else {
+        None
+    };
+    if let Some(pos) = locked.or(nearest_pos) {
         let pt = to_screen(pos);
-        let off = hp - pt;
+        let off = hover_pos.map(|hp| hp - pt).unwrap_or(Vec2::ZERO);
         let mut cands: Vec<Move> = legal.iter().filter(|m| m.pos == pos).copied().collect();
         cands.sort_by_key(|m| (m.line.dir.delta(), m.line.origin));
+        let nc = cands.len();
 
         if cands.len() >= 2 {
             // Thinner than the real drawn lines (line_w ≈ 0.085·cell) so the
@@ -246,40 +272,75 @@ pub fn show(
                 })
                 .fold(f32::NEG_INFINITY, f32::max)
         };
-        let aim_idx = (0..cands.len())
+        let aim_idx = (0..nc)
             .max_by(|&i, &j| aim(&cands[i]).partial_cmp(&aim(&cands[j])).unwrap())
             .unwrap_or(0);
 
-        // Per-point cycle selection (None = follow the cursor aim); the scroll
-        // wheel advances it through all candidates at this point. Scroll is
-        // accumulated so one wheel notch (or a deliberate trackpad swipe) = one
-        // step, regardless of device resolution.
-        let id = egui::Id::new("hover_cycle_sel");
-        let prev: Option<(Pos, Option<usize>, f32)> = ui.ctx().memory(|m| m.data.get_temp(id));
-        let (mut sel, mut accum) = match prev {
-            Some((p, s, a)) if p == pos => (s, a),
-            _ => (None, 0.0),
+        // The highlighted candidate. Aim mode adds scroll-wheel cycling on top of
+        // the cursor aim; Click mode follows the cursor aim directly.
+        let active = match mode {
+            InputMode::Aim => {
+                // Per-point selection (None = follow the cursor aim), persisted
+                // across frames and keyed by the point; the wheel advances it,
+                // accumulated so one notch (or a trackpad swipe) = one step.
+                let id = egui::Id::new("hover_cycle_sel");
+                let prev: Option<(Pos, Option<usize>, f32)> =
+                    ui.ctx().memory(|m| m.data.get_temp(id));
+                let (mut sel, mut accum) = match prev {
+                    Some((p, s, a)) if p == pos => (s, a),
+                    _ => (None, 0.0),
+                };
+                if nc >= 2 && cycle_scroll != 0.0 {
+                    const STEP: f32 = 40.0;
+                    accum += cycle_scroll;
+                    while accum >= STEP {
+                        sel = Some((sel.unwrap_or(aim_idx) + 1) % nc);
+                        accum -= STEP;
+                    }
+                    while accum <= -STEP {
+                        sel = Some((sel.unwrap_or(aim_idx) + nc - 1) % nc);
+                        accum += STEP;
+                    }
+                }
+                ui.ctx()
+                    .memory_mut(|m| m.data.insert_temp(id, (pos, sel, accum)));
+                sel.unwrap_or(aim_idx).min(nc.saturating_sub(1))
+            }
+            InputMode::Click => {
+                tap_selecting = locked.is_some();
+                aim_idx
+            }
         };
-        if cands.len() >= 2 && cycle_scroll != 0.0 {
-            const STEP: f32 = 40.0;
-            let n = cands.len();
-            accum += cycle_scroll;
-            while accum >= STEP {
-                sel = Some((sel.unwrap_or(aim_idx) + 1) % n);
-                accum -= STEP;
-            }
-            while accum <= -STEP {
-                sel = Some((sel.unwrap_or(aim_idx) + n - 1) % n);
-                accum += STEP;
-            }
-        }
-        ui.ctx()
-            .memory_mut(|m| m.data.insert_temp(id, (pos, sel, accum)));
-
-        let active = sel.unwrap_or(aim_idx).min(cands.len().saturating_sub(1));
         *hovered = cands.get(active).copied();
 
-        if cands.len() >= 2 {
+        // Decide whether this interaction plays (or locks) a move.
+        match mode {
+            // A single click plays the aimed/cycled candidate.
+            InputMode::Aim => {
+                if resp.clicked() {
+                    to_play = *hovered;
+                }
+            }
+            // Click locks a point, then aim by moving the cursor and click again to
+            // play; a lone candidate plays at once. Escape cancels a lock.
+            InputMode::Click => {
+                if locked.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    ui.ctx()
+                        .memory_mut(|m| m.data.insert_temp(lock_id, None::<Pos>));
+                } else if resp.clicked() {
+                    if locked.is_some() || nc <= 1 {
+                        to_play = *hovered;
+                        ui.ctx()
+                            .memory_mut(|m| m.data.insert_temp(lock_id, None::<Pos>));
+                    } else {
+                        ui.ctx()
+                            .memory_mut(|m| m.data.insert_temp(lock_id, Some(pos)));
+                    }
+                }
+            }
+        }
+
+        if nc >= 2 {
             painter.text(
                 pt + egui::vec2(dot_r + 2.0, -dot_r - 2.0),
                 egui::Align2::LEFT_BOTTOM,
@@ -305,7 +366,13 @@ pub fn show(
         painter.circle_filled(
             to_screen(mv.pos),
             (cell_size * 0.22).max(4.0),
-            Color32::from_rgb(0x2f, 0x9e, 0x44),
+            // Orange while a multi-line tap selection is still being chosen (not yet
+            // committed); green otherwise.
+            if tap_selecting {
+                Color32::from_rgb(0xf0, 0x8c, 0x28)
+            } else {
+                Color32::from_rgb(0x2f, 0x9e, 0x44)
+            },
         );
     }
 
@@ -357,10 +424,8 @@ pub fn show(
         }
     }
 
-    if resp.clicked() {
-        if let Some(mv) = *hovered {
-            return Some(mv);
-        }
+    if let Some(mv) = to_play {
+        return Some(mv);
     }
 
     None

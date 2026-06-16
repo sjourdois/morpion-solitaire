@@ -26,7 +26,12 @@ older Pentasol text format.
 
 ## Install
 
-The quickest way — the GUI and CLI, from crates.io:
+**Pre-built binaries** for Linux (x86_64), macOS (Intel & Apple Silicon) and
+Windows are attached to every
+[release](https://github.com/sjourdois/morpion-solitaire/releases/latest) — just
+download, unpack and run.
+
+Or build from crates.io (the GUI and CLI):
 
 ```sh
 cargo install morpion-solitaire
@@ -81,13 +86,30 @@ a short sample — longer runs go considerably further.
 | Variant | Known record | Search | Reference |
 |---------|--------------|--------|-----------|
 | 4D | 35 (optimal) | systematic (exhaustive) | proves the optimum **35**; full key-space traversal: _to be measured_ |
-| 4T | 62 (optimal) | NRPA (level 3) | 60 in 45 s |
-| 5T | 178 (world record) | NRPA (level 3) | 90 in 45 s |
-| 5D | 82 | NRPA (level 3) | 63 in 45 s |
+| 4T | 62 (optimal) | NRPA (level 3) | 62 — the optimum — in 45 s |
+| 5T | 178 (world record) | NRPA (level 3) | 106 in 45 s |
+| 5D | 82 | NRPA (level 3) | 69 in 45 s |
 
 In 4D the game space is small enough to be **explored exhaustively**: the
 systematic search proves the optimum, and the app announces it (elapsed time +
 optimal score) once the tree is drained.
+
+### The board grid
+
+The board is a fixed square **bitboard**: `GRID × GRID` cells where `GRID` is the
+bit width of one row word (`Row` in `game::board`). It is currently `u64`, i.e. a
+**64×64** grid. The width is a deliberate speed knob — `u64` bit-ops are
+single-register on 64-bit hosts, giving roughly **1.6× the NRPA throughput** of a
+128-bit grid, while 64×64 still holds every known record with margin (the largest,
+rosin178, reaches grid coordinate ~19 of 60). `u32` (32×32) is no faster on a
+64-bit host and is too small for 5T.
+
+If a move would ever fall outside the grid, the board **refuses it, sets a
+`GRID_OVERFLOW` flag, and the search stops and saves the game** — it never crashes
+or silently corrupts a result. So if you push a search far past today's records
+and hit an overflow, the fix is simply to **widen the grid**: change the one-line
+`Row` alias (`u64` → `u128` for 128×128; beyond that, a `Row` newtype over
+`[u128; k]`). Everything else derives from `Row`, so nothing else changes.
 
 ## The MSR record format
 

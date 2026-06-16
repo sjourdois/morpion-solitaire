@@ -56,13 +56,13 @@ pub fn legal_moves_into(state: &GameState, moves: &mut Vec<Move>) {
 /// Append a single direction's legal moves via the bitboard row scan.
 ///
 /// A length-`n` window `(gx + k·dx, gy + k·dy)` is found by loading each row it
-/// touches as a `u128` shifted right by `k·dx`, collapsing the window onto one
-/// column position; ANDing all but one offset yields every window with exactly
-/// one empty cell, for the whole row at once. `dx ∈ {0,1}` (column step) and
-/// `dy ∈ {−1,0,1}` (row step) come straight from `dir.delta()`, so one routine
-/// covers H, V, DP and DN. The board margin keeps occupied columns ≤ 123, so
-/// the right-shifts never wrap a row edge: no boundary masking, no sub-word
-/// shifts, for any direction.
+/// touches as a `Row` word shifted right by `k·dx`, collapsing the window onto
+/// one column position; ANDing all but one offset yields every window with
+/// exactly one empty cell, for the whole row at once. `dx ∈ {0,1}` (column step)
+/// and `dy ∈ {−1,0,1}` (row step) come straight from `dir.delta()`, so one
+/// routine covers H, V, DP and DN. The board margin keeps occupied columns within
+/// the row word, so the right-shifts never wrap a row edge: no boundary masking,
+/// no sub-word shifts, for any direction.
 #[allow(clippy::needless_range_loop)] // index-parallel SWAR shifts; clearer by index
 fn append_dir(state: &GameState, out: &mut Vec<Move>, min_y: i16, max_y: i16, dir: Dir) {
     use super::board::{Row, GRID, OFFSET};
@@ -266,7 +266,7 @@ mod tests {
     /// Each direction of the bitboard generator must match the scalar oracle's
     /// subset for that direction, across random positions and all variants.
     fn assert_dir_matches(dir: Dir) {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
+        use rand::{rngs::StdRng, RngExt, SeedableRng};
         use std::collections::HashSet;
 
         let mut rng = StdRng::seed_from_u64(0xC0FFEE_u64);
@@ -275,7 +275,7 @@ mod tests {
         for variant in [Variant::T5, Variant::D5, Variant::T4, Variant::D4] {
             for _ in 0..300 {
                 let mut state = GameState::new(variant);
-                let depth = rng.gen_range(0..45);
+                let depth = rng.random_range(0..45);
                 for _ in 0..depth {
                     let (_, min_y, _, max_y) = state.bounding_box().unwrap();
                     bb.clear();
@@ -297,7 +297,7 @@ mod tests {
                     if mvs.is_empty() {
                         break;
                     }
-                    state.apply(mvs[rng.gen_range(0..mvs.len())]);
+                    state.apply(mvs[rng.random_range(0..mvs.len())]);
                 }
             }
         }
@@ -326,7 +326,7 @@ mod tests {
     /// The promoted bitboard `legal_moves` must equal the full scalar oracle.
     #[test]
     fn legal_moves_matches_scalar() {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
+        use rand::{rngs::StdRng, RngExt, SeedableRng};
         use std::collections::HashSet;
 
         let mut rng = StdRng::seed_from_u64(0x1234_5678_u64);
@@ -335,7 +335,7 @@ mod tests {
         for variant in [Variant::T5, Variant::D5, Variant::T4, Variant::D4] {
             for _ in 0..300 {
                 let mut state = GameState::new(variant);
-                let depth = rng.gen_range(0..45);
+                let depth = rng.random_range(0..45);
                 for _ in 0..depth {
                     let bb = legal_moves(&state);
                     legal_moves_scalar_into(&state, &mut sc);
@@ -352,7 +352,7 @@ mod tests {
                     if bb.is_empty() {
                         break;
                     }
-                    state.apply(bb[rng.gen_range(0..bb.len())]);
+                    state.apply(bb[rng.random_range(0..bb.len())]);
                 }
             }
         }

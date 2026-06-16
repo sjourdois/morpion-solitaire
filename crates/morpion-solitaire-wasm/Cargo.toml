@@ -16,13 +16,17 @@ crate-type = ["cdylib"]
 # `cargo build --workspace` / clippy and never drags web deps into native builds.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 morpion-solitaire = { path = "../morpion-solitaire" }
-eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+# `persistence` makes eframe expose `cc.storage` (localStorage on web) so the
+# app's saved UI preferences survive a reload, matching the native build.
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 wasm-bindgen-rayon = { version = "1", features = ["no-bundler"] }
 web-sys = { version = "0.3", features = ["Window", "Navigator", "Document", "Element", "HtmlCanvasElement"] }
-getrandom = { version = "0.2", features = ["js"] }
+# getrandom 0.4 renamed the wasm backend feature `js` → `wasm_js` (paired with
+# the `--cfg getrandom_backend="wasm_js"` flag in .cargo/config.toml).
+getrandom = { version = "0.4", features = ["wasm_js"] }
 console_error_panic_hook = "0.1"
 console_log = "1"
 log = "0.4"

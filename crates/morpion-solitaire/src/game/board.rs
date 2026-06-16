@@ -4,11 +4,16 @@ pub type Pos = (i16, i16);
 
 /// Bitset word backing one grid row / one line track. The grid is `GRID × GRID`
 /// with `GRID = Row::BITS`, so resizing the grid is just changing this alias:
-/// `u64` → 64×64, `u128` → 128×128. A larger grid would need a `Row` newtype
-/// over `[u128; k]` implementing the handful of bit ops used here (`Shl`, `Shr`,
-/// `BitAnd`, `BitOr`, `Not`, `trailing_zeros`, `== 0`) — there is no primitive
-/// `u256`. Everything else derives from `Row`, so nothing else changes.
-pub type Row = u128;
+/// `u32` → 32×32, `u64` → 64×64, `u128` → 128×128. `u64` is chosen here: its bit
+/// ops are single-register on 64-bit hosts (≈1.6× the NRPA throughput of `u128`,
+/// which is two-register), while 64×64 still holds every known record with margin
+/// (the largest, rosin178, reaches grid coordinate ~19 of 60). `u32` is no faster
+/// than `u64` on a 64-bit host yet 32×32 is too small for 5T. A larger grid would
+/// need a `Row` newtype over `[u128; k]` implementing the handful of bit ops used
+/// here (`Shl`, `Shr`, `BitAnd`, `BitOr`, `Not`, `trailing_zeros`, `== 0`) — there
+/// is no primitive `u256`. Everything else derives from `Row`, so nothing else
+/// changes.
+pub type Row = u64;
 
 /// Side length of the fixed square grid = number of bits in `Row`.
 pub const GRID: i16 = Row::BITS as i16;
@@ -106,8 +111,19 @@ mod tests {
     #[test]
     fn insert_contains_remove_with_negative_coords() {
         let mut b = Board::new();
-        // Coordinates span both signs, as real games do once they grow.
-        let pts = [(0i16, 0i16), (-30, 12), (40, -25), (-50, -50), (55, 55)];
+        // Coordinates span both signs, as real games do once they grow. Derive the
+        // extreme valid coordinates from the grid so the test tracks the `Row`
+        // alias instead of hard-coding a width.
+        let lo = MARGIN - OFFSET; // most-negative valid coordinate
+        let hi = GRID - MARGIN - 1 - OFFSET; // most-positive valid coordinate
+        let pts = [
+            (0i16, 0i16),
+            (lo, hi),
+            (hi, lo),
+            (lo, lo),
+            (hi, hi),
+            (-3, 7),
+        ];
         for &p in &pts {
             assert!(!b.contains(p));
             assert!(b.insert(p));

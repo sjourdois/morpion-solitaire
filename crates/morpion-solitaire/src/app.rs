@@ -39,16 +39,18 @@ fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "atkinson".to_owned(),
-        FontData::from_static(include_bytes!(
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
             "../assets/fonts/AtkinsonHyperlegibleNext-Regular.ttf"
-        )),
+        ))),
     );
     // A subset of Noto Sans CJK JP for the Japanese locale (Atkinson is Latin
     // only). It covers the glyphs used in `locales/ja` plus the full kana ranges;
     // adding new Japanese text with unseen kanji means re-subsetting the font.
     fonts.font_data.insert(
         "noto-jp".to_owned(),
-        FontData::from_static(include_bytes!("../assets/fonts/NotoSansJP-subset.otf")),
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/NotoSansJP-subset.otf"
+        ))),
     );
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         let list = fonts.families.entry(family).or_default();
@@ -101,6 +103,14 @@ pub struct MorpionApp {
     /// Last time the systematic search was auto-checkpointed.
     last_checkpoint: Instant,
     import_open: bool,
+    /// On narrow (mobile) screens the controls panel is an overlay toggled by a
+    /// button; this tracks whether it is open. Ignored on wide screens, where the
+    /// panel is always docked. Starts closed so a phone shows the board first.
+    controls_open: bool,
+    /// How several collinear lines at a point are disambiguated: cursor aim +
+    /// scroll wheel (Aim), or click-to-lock + aim + click-to-play (Click). Toggled
+    /// from a small overlay on the board.
+    input_mode: board_view::InputMode,
     import_text: String,
     status: Option<String>,
     /// Highest record saved per algorithm category ("systematic" | "nrpa" |
@@ -204,11 +214,36 @@ fn record_meta() -> Vec<(Variant, String)> {
 impl MorpionApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_fonts(&cc.egui_ctx);
-        // Restore persisted preferences (theme + "don't show rules").
+        // Restore persisted UI preferences (see `save`). Everything here is a
+        // setting, not game state; an unknown/absent value falls back to default.
         let get = |k: &str| cc.storage.and_then(|s| s.get_string(k));
-        let dark_mode = get("dark_mode").map(|v| v == "true").unwrap_or(true);
-        let hide_rules = get("hide_rules").map(|v| v == "true").unwrap_or(false);
+        let get_bool = |k: &str, default: bool| get(k).map(|v| v == "true").unwrap_or(default);
+        let dark_mode = get_bool("dark_mode", true);
+        let hide_rules = get_bool("hide_rules", false);
         let default_author = get("default_author").unwrap_or_default();
+        let view_arrows = get_bool("view_arrows", true);
+        let view_numbers = get_bool("view_numbers", true);
+        let show_legal = get_bool("show_legal", true);
+        // Enums persist as JSON; each parse is its own expression so the target
+        // type is inferred independently from the fallback.
+        let input_mode = get("input_mode")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(board_view::InputMode::Aim);
+        let algo = get("algo")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(SearchAlgo::Nrpa);
+        let start_point = get("start_point")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(StartPoint::Empty);
+        let export_format = get("export_format")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(ExportFormat::Msr);
+        let nrpa_level = get("nrpa_level")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(NRPA_LEVEL);
+        let variant = get("variant")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Variant::T5);
         cc.egui_ctx.set_visuals(if dark_mode {
             egui::Visuals::dark()
         } else {
@@ -217,7 +252,6 @@ impl MorpionApp {
         // The UI language is set by the platform entry point (native `run_native`
         // or the wasm shell) before the app is built, so this stays free of any
         // OS/browser locale API.
-        let variant = Variant::T5;
         let state = GameState::new(variant);
         let legal = legal_moves(&state);
         Self {
@@ -226,15 +260,15 @@ impl MorpionApp {
             hovered: None,
             view_rot: 0,
             view_flip: false,
-            view_arrows: true,
-            view_numbers: true,
-            show_legal: true,
+            view_arrows,
+            view_numbers,
+            show_legal,
             view_zoom: 1.0,
             view_pan: egui::Vec2::ZERO,
-            algo: SearchAlgo::Nrpa,
-            nrpa_level: NRPA_LEVEL,
-            start_point: StartPoint::Empty,
-            export_format: ExportFormat::Msr,
+            algo,
+            nrpa_level,
+            start_point,
+            export_format,
             selected_variant: variant,
             search: None,
             search_preview: None,
@@ -247,6 +281,8 @@ impl MorpionApp {
             search_elapsed: Duration::ZERO,
             last_checkpoint: Instant::now(),
             import_open: false,
+            controls_open: false,
+            input_mode,
             import_text: String::new(),
             status: None,
             // Seed each category's threshold from disk so we only persist a
@@ -326,7 +362,7 @@ impl MorpionApp {
         // board rect: the left toolbar hugs the board's top-left, the right one the
         // board's top-right (which is the controls panel's left edge, not the
         // window edge).
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let left_off = egui::vec2(board_rect.left() + 10.0, board_rect.top() + 10.0);
         let right_off = egui::vec2(
             board_rect.right() - screen.right() - 10.0,
@@ -417,6 +453,43 @@ impl MorpionApp {
                             self.state.redo();
                             self.refresh_legal();
                             self.dirty = true;
+                        }
+                    });
+                });
+            });
+
+        // Line-picker mode toggle, centred on the board's bottom edge: Aim (cursor
+        // + scroll wheel) vs Click (click to lock, aim, click to play).
+        let mode_off = egui::vec2(
+            board_rect.center().x - screen.center().x,
+            board_rect.bottom() - screen.bottom() - 10.0,
+        );
+        egui::Area::new(egui::Id::new("board_picker_mode"))
+            .anchor(egui::Align2::CENTER_BOTTOM, mode_off)
+            .show(ctx, |ui| {
+                frame(ui).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        use board_view::InputMode;
+                        ui.label(fl!(l, "pick-mode-label"));
+                        if ui
+                            .selectable_label(
+                                self.input_mode == InputMode::Aim,
+                                fl!(l, "pick-mode-aim"),
+                            )
+                            .on_hover_text(fl!(l, "pick-mode-aim-hint"))
+                            .clicked()
+                        {
+                            self.input_mode = InputMode::Aim;
+                        }
+                        if ui
+                            .selectable_label(
+                                self.input_mode == InputMode::Click,
+                                fl!(l, "pick-mode-click"),
+                            )
+                            .on_hover_text(fl!(l, "pick-mode-click-hint"))
+                            .clicked()
+                        {
+                            self.input_mode = InputMode::Click;
                         }
                     });
                 });
@@ -984,7 +1057,7 @@ impl MorpionApp {
     /// and show a hint while files hover over the window.
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
-            let center = ctx.screen_rect().center();
+            let center = ctx.content_rect().center();
             egui::Area::new(egui::Id::new("drop_overlay"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(center - egui::vec2(160.0, 16.0))
@@ -1319,17 +1392,43 @@ impl MorpionApp {
 
 impl eframe::App for MorpionApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string("dark_mode", self.dark_mode.to_string());
-        storage.set_string("hide_rules", self.hide_rules.to_string());
-        storage.set_string("default_author", self.default_author.clone());
+        let mut set = |k: &str, v: String| storage.set_string(k, v);
+        set("dark_mode", self.dark_mode.to_string());
+        set("hide_rules", self.hide_rules.to_string());
+        set("default_author", self.default_author.clone());
+        // View/interaction toggles and the search configuration — restored in `new`.
+        set("view_arrows", self.view_arrows.to_string());
+        set("view_numbers", self.view_numbers.to_string());
+        set("show_legal", self.show_legal.to_string());
+        set("nrpa_level", self.nrpa_level.to_string());
+        if let Ok(s) = serde_json::to_string(&self.selected_variant) {
+            set("variant", s);
+        }
+        if let Ok(s) = serde_json::to_string(&self.input_mode) {
+            set("input_mode", s);
+        }
+        if let Ok(s) = serde_json::to_string(&self.algo) {
+            set("algo", s);
+        }
+        if let Ok(s) = serde_json::to_string(&self.start_point) {
+            set("start_point", s);
+        }
+        if let Ok(s) = serde_json::to_string(&self.export_format) {
+            set("export_format", s);
+        }
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // eframe 0.34 drives the app through `ui` (the root viewport Ui); the
+        // panels are shown *inside* it. The rest of this method works at the
+        // context level (floating areas/windows, input, repaint), so take a cheap
+        // (`Arc`) clone of the context to keep those calls unchanged.
+        let ctx = ui.ctx().clone();
         // Keep egui's theme in step with `dark_mode`. eframe can apply the
         // platform/browser theme over the choice made in `new()`, which would
         // desync the menu (egui visuals) from the board (which follows
         // `dark_mode`); reassert it here, cheaply — only when it has drifted.
-        if ctx.style().visuals.dark_mode != self.dark_mode {
+        if ctx.global_style().visuals.dark_mode != self.dark_mode {
             ctx.set_visuals(if self.dark_mode {
                 egui::Visuals::dark()
             } else {
@@ -1462,7 +1561,7 @@ impl eframe::App for MorpionApp {
             (copy, paste)
         });
         if copy {
-            self.copy_to_clipboard(ctx);
+            self.copy_to_clipboard(&ctx);
         }
         if let Some(text) = paste {
             self.try_import(&text);
@@ -1471,7 +1570,7 @@ impl eframe::App for MorpionApp {
         // Shortcuts (only when no text field is focused). Plain keys: R rotate,
         // F flip, G recenter — mirroring the board's overlaid icon buttons.
         // Command (Ctrl / ⌘) combos: Z undo, R redo, N new game, S export.
-        if !ctx.wants_keyboard_input() {
+        if !ctx.egui_wants_keyboard_input() {
             let k = ctx.input(|i| {
                 let cmd = i.modifiers.command;
                 let plain = !cmd;
@@ -1516,7 +1615,7 @@ impl eframe::App for MorpionApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 self.export_to_file();
                 #[cfg(target_arch = "wasm32")]
-                self.copy_to_clipboard(ctx);
+                self.copy_to_clipboard(&ctx);
             }
         }
 
@@ -1544,10 +1643,21 @@ impl eframe::App for MorpionApp {
             .map(|(i, (_, label))| (label.clone(), i))
             .unzip();
 
-        egui::SidePanel::right("controls_panel")
-            .min_width(220.0)
-            .max_width(300.0)
-            .show(ctx, |ui| {
+        // On a narrow (phone) screen the controls become an overlay toggled by a
+        // button so the board can use the full width; on wider screens the panel
+        // stays docked as before. 550px ≈ below a small tablet in portrait.
+        let narrow = ctx.content_rect().width() < 550.0;
+        if !narrow || self.controls_open {
+            let panel = egui::Panel::right("controls_panel");
+            let panel = if narrow {
+                // Cover the board on a phone; not user-resizable.
+                panel
+                    .resizable(false)
+                    .exact_size(ctx.content_rect().width())
+            } else {
+                panel.min_size(220.0).max_size(300.0)
+            };
+            panel.show_inside(ui, |ui| {
                 let out = controls::show(
                     ui,
                     &controls::ControlsInput {
@@ -1755,14 +1865,34 @@ impl eframe::App for MorpionApp {
                     );
                 });
             });
+        }
+
+        // Mobile: a floating button toggles the controls overlay (drawn on top).
+        if narrow {
+            let open = self.controls_open;
+            egui::Area::new(egui::Id::new("controls_toggle"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+                .show(&ctx, |ui| {
+                    let icon = if open { Icon::Close } else { Icon::Menu };
+                    if icons::icon_button(ui, icon, open, true).clicked() {
+                        self.controls_open = !open;
+                    }
+                });
+        }
 
         // The board occupies whatever the side panels leave free; capture it so the
         // overlaid toolbars anchor to the board's corners rather than the screen's
-        // (otherwise the right-hand toolbar lands over the controls panel).
-        let board_rect = ctx.available_rect();
+        // (otherwise the right-hand toolbar lands over the controls panel). On a
+        // phone with the controls overlay open the panel covers the board, so the
+        // board toolbars and search overlay are suppressed to avoid drawing on top.
+        let controls_cover_board = narrow && self.controls_open;
+        // Whatever the side panel left free is the board region (matches the old
+        // context-level `available_rect`).
+        let board_rect = ui.available_rect_before_wrap();
 
         let dark = self.dark_mode;
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             let (vr, vf, va, vn, sl) = (
                 self.view_rot,
                 self.view_flip,
@@ -1783,6 +1913,7 @@ impl eframe::App for MorpionApp {
                     va,
                     vn,
                     sl,
+                    self.input_mode,
                     &mut self.view_zoom,
                     &mut self.view_pan,
                     dark,
@@ -1799,6 +1930,7 @@ impl eframe::App for MorpionApp {
                     va,
                     vn,
                     sl,
+                    self.input_mode,
                     &mut self.view_zoom,
                     &mut self.view_pan,
                     dark,
@@ -1806,10 +1938,12 @@ impl eframe::App for MorpionApp {
             }
         });
 
-        self.board_toolbars(ctx, board_rect);
-        self.search_overlay(ctx, board_rect);
-        self.shortcuts_window(ctx);
-        self.rules_window(ctx);
+        if !controls_cover_board {
+            self.board_toolbars(&ctx, board_rect);
+            self.search_overlay(&ctx, board_rect);
+        }
+        self.shortcuts_window(&ctx);
+        self.rules_window(&ctx);
 
         if let Some(mv) = played_move {
             self.state.apply(mv);
@@ -1818,17 +1952,19 @@ impl eframe::App for MorpionApp {
         }
 
         // Unsaved-changes confirmation for a deferred board-replacing action.
-        self.confirm_pending(ctx);
-        self.author_prompt_window(ctx);
-        self.exhausted_window(ctx);
-        self.handle_dropped_files(ctx);
+        self.confirm_pending(&ctx);
+        self.author_prompt_window(&ctx);
+        self.exhausted_window(&ctx);
+        self.handle_dropped_files(&ctx);
     }
 }
 
 /// Records directory under the XDG data dir:
 /// `$XDG_DATA_HOME/morpion-solitaire/records` (falling back to
 /// `~/.local/share` per the XDG Base Directory spec, then `.`).
-/// Record categories, each with its own subdirectory and threshold.
+/// Record categories, each with its own subdirectory and threshold. Used only by
+/// the native record-saving paths (the web build has no filesystem).
+#[cfg(not(target_arch = "wasm32"))]
 const RECORD_CATEGORIES: [&str; 4] = ["systematic", "nrpa", "nrpa-seeded", "beam"];
 
 #[cfg(not(target_arch = "wasm32"))]

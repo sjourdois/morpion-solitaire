@@ -1,0 +1,62 @@
+name: Release binaries
+
+# On a `v*` tag, build the native GUI + CLI binary (`morpion-solitaire`) for the
+# common desktop targets and attach them to the GitHub Release (created if it
+# does not exist yet). This is independent of `release.yml`, which publishes the
+# crates to crates.io.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # allow rebuilding assets for an existing tag by hand
+
+permissions:
+  contents: write # create/update the GitHub Release and upload assets
+
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: linux-x86_64 }
+          - { os: macos-13, target: x86_64-apple-darwin, name: macos-x86_64 }
+          - { os: macos-latest, target: aarch64-apple-darwin, name: macos-aarch64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: windows-x86_64 }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p morpion-solitaire --bin morpion-solitaire --target ${{ matrix.target }}
+
+      # Package the single binary as tar.gz (Unix) or zip (Windows), named after
+      # the tag and target so release assets are unambiguous.
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          dir="target/${{ matrix.target }}/release"
+          tar -C "$dir" -czf "morpion-solitaire-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" morpion-solitaire
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/morpion-solitaire.exe" `
+            -DestinationPath "morpion-solitaire-${{ github.ref_name }}-${{ matrix.name }}.zip"
+
+      - name: Attach to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: morpion-solitaire-${{ github.ref_name }}-${{ matrix.name }}.*
