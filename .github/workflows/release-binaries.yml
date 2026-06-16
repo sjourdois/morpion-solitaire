@@ -4,11 +4,20 @@ name: Release binaries
 # common desktop targets and attach them to the GitHub Release (created if it
 # does not exist yet). This is independent of `release.yml`, which publishes the
 # crates to crates.io.
+#
+# It can also be dispatched by hand for an existing tag (e.g. to (re)build assets
+# after a CI fix when the tag itself is protected and cannot be moved): run it
+# from the default branch and pass the tag in the `tag` input. The job then
+# checks out that tag's source but uses this (fixed) workflow definition.
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: # allow rebuilding assets for an existing tag by hand
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build assets for, e.g. v0.1.3"
+        required: true
 
 permissions:
   contents: write # create/update the GitHub Release and upload assets
@@ -21,6 +30,9 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # On a tag push this is the tag itself; on a manual dispatch it is the input.
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +45,8 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc, name: windows-x86_64 }
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }} # build the tag's source, not the dispatched branch
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -50,15 +64,16 @@ jobs:
         shell: bash
         run: |
           dir="target/${{ matrix.target }}/release"
-          tar -C "$dir" -czf "morpion-solitaire-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" morpion-solitaire
+          tar -C "$dir" -czf "morpion-solitaire-${TAG}-${{ matrix.name }}.tar.gz" morpion-solitaire
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Compress-Archive -Path "target/${{ matrix.target }}/release/morpion-solitaire.exe" `
-            -DestinationPath "morpion-solitaire-${{ github.ref_name }}-${{ matrix.name }}.zip"
+            -DestinationPath "morpion-solitaire-${env:TAG}-${{ matrix.name }}.zip"
 
       - name: Attach to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: morpion-solitaire-${{ github.ref_name }}-${{ matrix.name }}.*
+          tag_name: ${{ env.TAG }} # the release to create/update (matches the asset names)
+          files: morpion-solitaire-${{ env.TAG }}-${{ matrix.name }}.*
