@@ -10,7 +10,7 @@
 /// explore only one representative per orbit of the current stabiliser. The
 /// stabiliser shrinks as moves are played and is trivial after the first generic
 /// move, so the filtering only bites at the first move or two.
-use crate::game::board::Pos;
+use crate::game::board::{Board, Pos};
 use crate::game::line::{Dir, Line};
 use crate::game::moves::Move;
 
@@ -39,6 +39,98 @@ pub fn zobrist_value((x, y): Pos) -> u64 {
     h ^= h >> 27;
     h = h.wrapping_mul(0x94d049bb133111eb);
     h ^= h >> 31;
+    h
+}
+
+/// Whether the canonical **position** hash is mixed into a move's policy code.
+/// Default on (`NRPA_POS_CODE != "0"`) reproduces the current position-specific
+/// coding. Off ⇒ position-independent (Rosin-style) move coding: the policy
+/// learns global move preferences that generalize across *all* positions, not
+/// only symmetric ones. Read once; experimental knob for NRPA coding studies.
+///
+/// Finding (5T, level 3, 4×20 s): the two codings are within NRPA's run-to-run
+/// variance (position-specific ~92 avg / 94 max, move-only ~93 / 95) — no clear
+/// short-budget win, both at the ~90–95 cold ceiling. Kept OFF-equivalent by
+/// default; the generalization payoff, if any, would need long (multi-hour,
+/// deeper-level) runs to show, so the knob stays for that study.
+pub fn position_in_code() -> bool {
+    use std::sync::OnceLock;
+    static P: OnceLock<bool> = OnceLock::new();
+    *P.get_or_init(|| {
+        std::env::var("NRPA_POS_CODE")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Ring of 8 neighbours, clockwise from north (used by [`local_code`]).
+const RING: [(i16, i16); 8] = [
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+    (-1, -1),
+];
+
+/// Permutation of the 8 ring indices under each D4 transform's linear part, so a
+/// neighbourhood pattern can be folded to a canonical (symmetry-invariant) form.
+fn ring_perms() -> &'static [[u8; 8]; 8] {
+    use std::sync::OnceLock;
+    static P: OnceLock<[[u8; 8]; 8]> = OnceLock::new();
+    P.get_or_init(|| {
+        // Linear part of `apply_transform` (translation dropped): acts on offsets.
+        let lin = |t: usize, (x, y): (i16, i16)| -> (i16, i16) {
+            match t {
+                0 => (x, y),
+                1 => (-y, x),
+                2 => (-x, -y),
+                3 => (y, -x),
+                4 => (x, -y),
+                5 => (-x, y),
+                6 => (y, x),
+                _ => (-y, -x),
+            }
+        };
+        let mut perms = [[0u8; 8]; 8];
+        for (t, perm) in perms.iter_mut().enumerate() {
+            for (j, slot) in perm.iter_mut().enumerate() {
+                let img = lin(t, RING[j]);
+                *slot = RING.iter().position(|&o| o == img).unwrap() as u8;
+            }
+        }
+        perms
+    })
+}
+
+/// Symmetry-invariant hash of the local 8-neighbour occupancy around `pos`: the
+/// ring cells' occupancy as a byte, folded to the minimum over its 8 D4 images,
+/// then mixed. Used as an optional **local-context** term in the NRPA move code
+/// (`NRPA_LOCAL=1`) so the policy can generalize across positions that share a
+/// local pattern — between the position-specific and the move-only codings.
+pub fn local_code(board: &Board, pos: Pos) -> u64 {
+    let mut bits = 0u8;
+    for (j, &(dx, dy)) in RING.iter().enumerate() {
+        if board.contains((pos.0 + dx, pos.1 + dy)) {
+            bits |= 1 << j;
+        }
+    }
+    let mut canon = bits;
+    for perm in ring_perms() {
+        let mut b = 0u8;
+        for (j, &p) in perm.iter().enumerate() {
+            if bits & (1 << j) != 0 {
+                b |= 1 << p;
+            }
+        }
+        canon = canon.min(b);
+    }
+    let mut h = (canon as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0xa5a5_a5a5_a5a5_a5a5;
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h ^= h >> 27;
     h
 }
 
@@ -190,6 +282,7 @@ impl SymmetryHashes {
             n: (self.k + 1) / 2,
             active,
             len: len as u8,
+            pos_in_code: position_in_code(),
         }
     }
 }
@@ -207,6 +300,7 @@ pub struct MoveCoder {
     n: i16,
     active: [u8; 8],
     len: u8,
+    pos_in_code: bool,
 }
 
 impl MoveCoder {
@@ -225,7 +319,14 @@ impl MoveCoder {
             })
             .min()
             .unwrap();
-        self.cmin.wrapping_mul(0x9e3779b97f4a7c15) ^ move_code
+        // Position-specific (default) mixes the canonical state hash in; the
+        // experimental position-independent mode keys the policy on the move
+        // alone (Rosin-style), trading precision for cross-position generalization.
+        if self.pos_in_code {
+            self.cmin.wrapping_mul(0x9e3779b97f4a7c15) ^ move_code
+        } else {
+            move_code
+        }
     }
 }
 

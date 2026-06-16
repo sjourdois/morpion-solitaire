@@ -29,3 +29,6 @@ target
 # MSRV check crate build outputs
 /tools/msrv-check/target/
 /tools/msrv-check/Cargo.lock
+
+# Editor swap files
+*.swp

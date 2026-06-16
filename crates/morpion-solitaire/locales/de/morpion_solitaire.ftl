@@ -109,3 +109,10 @@ status-copied-png-no-record = Bild kopiert (ohne eingebetteten Datensatz — als
 drop-hint = Ziehen Sie eine .msr-, .png- oder .svg-Datei hierher, um sie zu laden
 link-docs = Doku
 link-source = Quelltext
+
+# Line picker mode (Aim = cursor + scroll wheel, Click = click to lock + aim + click to play)
+pick-mode-label = Auswahl
+pick-mode-aim = Zielen
+pick-mode-click = Klick
+pick-mode-aim-hint = Mit dem Cursor zielen, Mausrad wechselt die Linie, Klick spielt.
+pick-mode-click-hint = Klicken zum Sperren des Punkts, bewegen zum Zielen, erneut klicken zum Spielen.

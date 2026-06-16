@@ -5,7 +5,7 @@ use egui::{Color32, RichText, Ui};
 use i18n_embed_fl::fl;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SearchAlgo {
     Nrpa,
     Beam,
@@ -17,7 +17,7 @@ pub enum SearchAlgo {
 
 /// Where a search begins — replaces the old warm-start + reset-to-initial
 /// checkboxes with a single coherent choice (the valid set depends on the algo).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StartPoint {
     /// A fresh empty cross.
     Empty,
@@ -46,7 +46,7 @@ pub struct ResumeInfo {
 
 /// Output format for both the clipboard ("Copy") and the file export
 /// ("Export…"). The same selector drives both actions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportFormat {
     /// Compact `MS1:` save string (the MSR record format).
     Msr,
@@ -353,7 +353,9 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
             SearchAlgo::Perturbation => fl!(l, "algo-perturbation"),
         };
         ui.add_enabled_ui(!input.search_running, |ui| {
-            let mut algos = vec![SearchAlgo::Nrpa, SearchAlgo::Beam, SearchAlgo::Systematic];
+            // Ordered simplest/exact → most sophisticated heuristic, matching the
+            // docs' Search-algorithms page.
+            let mut algos = vec![SearchAlgo::Systematic, SearchAlgo::Beam, SearchAlgo::Nrpa];
             // Perturbation is native-only (it uses OS threads).
             if input.checkpoint_supported {
                 algos.push(SearchAlgo::Perturbation);

@@ -26,6 +26,9 @@ pub enum Icon {
     Sun,
     Moon,
     Info,
+    // Mobile: toggle the controls panel.
+    Menu,
+    Close,
 }
 
 /// A square icon button. `selected` highlights it (toggles); `enabled` dims it
@@ -40,7 +43,13 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, selected: bool, enabled: bool) -> Re
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let visuals = ui.style().interact_selectable(&resp, selected);
     let painter = ui.painter();
-    painter.rect(rect, 5.0, visuals.weak_bg_fill, visuals.bg_stroke);
+    painter.rect(
+        rect,
+        5.0,
+        visuals.weak_bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
     let col = if enabled {
         visuals.fg_stroke.color
     } else {
@@ -99,6 +108,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, selected: bool, enabled: bool) -> Re
                 egui::Rect::from_min_max(p(0.12, 0.12), p(0.88, 0.88)),
                 2.0,
                 stroke,
+                egui::StrokeKind::Inside,
             );
             painter.circle_filled(p(0.5, 0.5), r.width() * 0.1, col);
         }
@@ -145,6 +155,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, selected: bool, enabled: bool) -> Re
                 egui::Rect::from_min_max(p(0.18, 0.18), p(0.6, 0.6)),
                 2.0,
                 stroke,
+                egui::StrokeKind::Inside,
             );
             painter.rect_filled(
                 egui::Rect::from_min_max(p(0.4, 0.4), p(0.82, 0.82)),
@@ -155,6 +166,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, selected: bool, enabled: bool) -> Re
                 egui::Rect::from_min_max(p(0.4, 0.4), p(0.82, 0.82)),
                 2.0,
                 stroke,
+                egui::StrokeKind::Inside,
             );
         }
         Icon::Export => {
@@ -235,6 +247,17 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, selected: bool, enabled: bool) -> Re
                 2.0,
                 col,
             );
+        }
+        Icon::Menu => {
+            // Hamburger: three horizontal bars.
+            painter.line_segment([p(0.18, 0.3), p(0.82, 0.3)], stroke);
+            painter.line_segment([p(0.18, 0.5), p(0.82, 0.5)], stroke);
+            painter.line_segment([p(0.18, 0.7), p(0.82, 0.7)], stroke);
+        }
+        Icon::Close => {
+            // An X.
+            painter.line_segment([p(0.26, 0.26), p(0.74, 0.74)], stroke);
+            painter.line_segment([p(0.74, 0.26), p(0.26, 0.74)], stroke);
         }
     }
     resp

@@ -11,9 +11,16 @@ the browser. It has two modes:
 
 - Pick a [variant](../game/rules.md) (5T/5D/4T/4D).
 - Legal moves are highlighted; click one to play it. When several lines complete
-  at the same point, **aim** with the cursor and use the scroll wheel to cycle
-  through all collinear candidates (up to five). The faint stubs that distinguish
-  touching lines are shown only in the Touching variants.
+  at the same point, a small **picker** toggle on the board chooses how you pick
+  between them:
+  - **Aim** — aim with the cursor and use the scroll wheel to cycle through all
+    collinear candidates (up to five); a click plays.
+  - **Click** — click the point to lock it (the dot turns orange), move the
+    cursor to aim the line among the candidates, then click again to play it
+    (Esc cancels).
+
+  The faint stubs that distinguish touching lines are shown only in the Touching
+  variants.
 - You can hide the legal-move markers (they then appear only on hover).
 - View controls: rotate (`R`) / flip (`F`) the board, recenter (`G`), zoom with
   Ctrl/Cmd/Shift + wheel, draw move arrows, number the moves, and a light/dark
@@ -51,5 +58,7 @@ the browser. It has two modes:
 - Keyboard: `Ctrl/Cmd` + `Z`/`R` undo/redo, `N` new game, `S` export, `C` copy,
   `V` import. The `?` button lists every shortcut.
 
-Persisted between sessions: the theme, the "don't show the rules" choice, and
-your default author name.
+Persisted between sessions (natively **and** in the browser): the theme, the
+line-picker mode, the view toggles (arrows, numbers, legal-move markers), the
+search configuration (variant, algorithm, NRPA level, start point, export
+format), the "don't show the rules" choice, and your default author name.

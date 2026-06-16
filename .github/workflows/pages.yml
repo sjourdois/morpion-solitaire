@@ -61,17 +61,53 @@ jobs:
           mkdir -p docs/src/reference/images
           cp _site/records/*.png docs/src/reference/images/
 
+      # SITE_URL tells mdBook the book is served under /docs/, so the generated
+      # 404 page and absolute asset links resolve correctly in production. The
+      # whole-book print.html is duplicate content, so mark it noindex.
       - name: Build the documentation
-        run: mdbook build docs
+        run: |
+          MDBOOK_OUTPUT__HTML__SITE_URL=/docs/ mdbook build docs
+          if [ -f docs/book/print.html ]; then
+            sed -i 's#<head>#<head>\n        <meta name="robots" content="noindex">#' docs/book/print.html
+          fi
 
       - name: Assemble the site
         run: |
           mkdir -p _site/play _site/docs _site/spec
-          cp -r web/. _site/
+          cp -r web/. _site/   # static assets: favicon.svg, og-image.png
+          # Generate the localized landing pages (/en/, /fr/, … for every app
+          # language) plus a root index.html that redirects to the visitor's
+          # language. The app version is shown under the Play link.
+          VER=$(grep -m1 '^version' crates/morpion-solitaire/Cargo.toml | cut -d'"' -f2)
+          python3 tools/landing/build.py --out _site --version "$VER"
           cp -r crates/morpion-solitaire-wasm/dist/. _site/play/
           cp -r docs/book/. _site/docs/
           cp -r docs/spec/. _site/spec/
           echo 'morpion-solitaire.io' > _site/CNAME
+
+      # Generate sitemap.xml from the assembled site so the many mdBook-generated
+      # doc pages stay covered automatically. 404/print pages are excluded, and an
+      # index.html maps to its directory URL (e.g. _site/play/index.html -> /play/).
+      # The root _site/index.html is a noindex language redirector, so it is left
+      # out — the per-language /en/, /fr/, … pages carry the real content.
+      # The versioned MSR spec is published as raw .md/.json, so list those too.
+      - name: Generate sitemap.xml and robots.txt
+        run: |
+          base='https://morpion-solitaire.io'
+          today=$(date -u +%Y-%m-%d)
+          paths=$(mktemp)
+          find _site -type f -name '*.html' ! -name '404.html' ! -name 'print.html' ! -path '_site/index.html' > "$paths"
+          find _site/spec -type f \( -name '*.md' -o -name '*.json' \) >> "$paths"
+          {
+            echo '<?xml version="1.0" encoding="UTF-8"?>'
+            echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            sed 's#^_site/##' "$paths" | sort -u | while read -r path; do
+              echo "  <url><loc>${base}/${path%index.html}</loc><lastmod>${today}</lastmod></url>"
+            done
+            echo '</urlset>'
+          } > _site/sitemap.xml
+          rm -f "$paths"
+          printf 'User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n' "$base" > _site/robots.txt
 
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

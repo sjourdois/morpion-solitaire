@@ -1,13 +1,39 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-    <title>Morpion Solitaire</title>
+    <title>Play Morpion Solitaire — in-browser player &amp; solver</title>
+    <meta name="description" content="Play Morpion Solitaire (5T, 5D, 4T, 4D) in your browser and hunt records with NRPA, large-neighbourhood perturbation, and exhaustive search — multi-threaded WebAssembly."/>
+    <link rel="canonical" href="https://morpion-solitaire.io/play/"/>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+
+    <!-- Social sharing (Open Graph / Twitter Card) -->
+    <meta property="og:type" content="website"/>
+    <meta property="og:site_name" content="Morpion Solitaire"/>
+    <meta property="og:title" content="Play Morpion Solitaire in your browser"/>
+    <meta property="og:description" content="Play the four standard variants and hunt records (5T world record: 178). Multi-threaded WebAssembly."/>
+    <meta property="og:url" content="https://morpion-solitaire.io/play/"/>
+    <meta property="og:image" content="https://morpion-solitaire.io/og-image.png"/>
+    <meta property="og:image:width" content="1200"/>
+    <meta property="og:image:height" content="630"/>
+    <meta name="twitter:card" content="summary_large_image"/>
     <style>
-        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
-        canvas { display: block; width: 100%; height: 100%; }
+        html, body {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background: #1a1a2e;
+            overscroll-behavior: none;          /* no pull-to-refresh / rubber-banding */
+        }
+        /* Pin to the viewport: avoids iOS Safari's toolbar resize jumps, and
+           disables text selection / the grey tap-highlight on touch. */
+        body {
+            position: fixed; inset: 0;
+            -webkit-user-select: none; user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        /* touch-action: none routes taps and drags to egui instead of letting
+           Safari treat them as scroll/zoom gestures (otherwise taps don't click). */
+        canvas { display: block; width: 100%; height: 100%; touch-action: none; }
     </style>
 
     <!--
@@ -17,6 +43,12 @@
         Must be loaded before the WASM bundle.
     -->
     <script src="coi-serviceworker.js"></script>
+
+    <!-- Privacy-friendly analytics (no cookies, no consent banner). crossorigin
+         is required: this page is cross-origin isolated (COEP: require-corp for
+         SharedArrayBuffer), so the script must load via CORS to satisfy COEP. -->
+    <script data-goatcounter="https://kwisatz.goatcounter.com/count"
+            crossorigin="anonymous" async src="//gc.zgo.at/count.js"></script>
 </head>
 <body>
     <canvas id="the_canvas_id"></canvas>

@@ -21,12 +21,15 @@
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::Ordering, Arc};
 
-use rand::Rng;
+use rand::RngExt; // rand 0.10 moved random()/random_range() onto RngExt (was Rng)
 
-use super::{symmetry::SymmetryHashes, SearchState};
+use super::{
+    symmetry::{local_code, MoveCoder, SymmetryHashes},
+    SearchState,
+};
 use crate::game::{
     board::Pos,
-    moves::{legal_moves, Move},
+    moves::{legal_moves_into, Move},
     state::GameState,
 };
 
@@ -76,6 +79,96 @@ fn beta(state: &GameState, pos: Pos) -> f64 {
         .filter(|&&(dx, dy)| state.board.contains((pos.0 + dx, pos.1 + dy)))
         .count();
     b * occ as f64
+}
+
+// NRPA tuning knobs (env). NRPA_TEMP, NRPA_LOCAL and NRPA_PORTFOLIO are
+// experimental and within NRPA's run-to-run variance at short budgets. NRPA_CLAMP
+// (Stabilized-NRPA logit clamping) was a decisive win and is now ON BY DEFAULT at
+// C=3 (see `nrpa_clamp`): clamping lifts the mean and cuts variance, and the gap
+// over unclamped grows with budget/level (5T L4/120s ~112 vs ~95), so it scales.
+
+/// Softmax temperature τ (`NRPA_TEMP`, default 1.0): weight ∝ exp(logit/τ). >1
+/// flattens (more exploration), <1 sharpens. Read once.
+fn nrpa_temp() -> f64 {
+    use std::sync::OnceLock;
+    static T: OnceLock<f64> = OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var("NRPA_TEMP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&t| t > 0.0)
+            .unwrap_or(1.0)
+    })
+}
+
+/// Stabilization: clamp every adapted policy logit to ±C — a Stabilized-NRPA
+/// flavour that curbs the premature convergence runaway weights cause. **On by
+/// default at C = 3** (`NRPA_CLAMP=<C>` overrides; `NRPA_CLAMP=0` disables). Set
+/// from a sweep where clamping lifts the mean *and* cuts variance, and the gain
+/// **grows** with budget/level rather than capping. The C sweet spot is tight:
+/// 5T L4/120 s mean best — off 95, C=2 99, **C=3 112**, C=4 105, C=6 94 (C=3 beat
+/// C=4 in every round of a 5-round head-to-head). Read once.
+fn nrpa_clamp() -> Option<f64> {
+    use std::sync::OnceLock;
+    const DEFAULT_CLAMP: f64 = 3.0;
+    static C: OnceLock<Option<f64>> = OnceLock::new();
+    *C.get_or_init(|| match std::env::var("NRPA_CLAMP") {
+        Ok(s) => s.parse::<f64>().ok().filter(|&c| c > 0.0), // explicit value; 0/invalid ⇒ off
+        Err(_) => Some(DEFAULT_CLAMP),                       // unset ⇒ default on
+    })
+}
+
+/// Mix a symmetry-invariant local-neighbourhood feature into the move code
+/// (`NRPA_LOCAL=1`, default off) so the policy generalizes across positions
+/// sharing a local pattern — between position-specific and move-only coding.
+fn nrpa_local() -> bool {
+    use std::sync::OnceLock;
+    static L: OnceLock<bool> = OnceLock::new();
+    *L.get_or_init(|| {
+        std::env::var("NRPA_LOCAL")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
+/// Island portfolio (`NRPA_PORTFOLIO=1`, default off): spread each island's
+/// temperature over a range instead of all islands sharing one, for diversity.
+fn nrpa_portfolio() -> bool {
+    use std::sync::OnceLock;
+    static P: OnceLock<bool> = OnceLock::new();
+    *P.get_or_init(|| {
+        std::env::var("NRPA_PORTFOLIO")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
+thread_local! {
+    /// 1/τ for the current island's playouts and adapts (set in `island`).
+    static TEMP_INV: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+}
+
+/// Temperature inverse for island `i` of `runs`: the global τ, or a spread over
+/// [0.6, 1.6]·τ across islands when the portfolio is on.
+fn island_inv_temp(i: usize, runs: usize) -> f64 {
+    let tau = nrpa_temp();
+    if !nrpa_portfolio() || runs <= 1 {
+        return 1.0 / tau;
+    }
+    let frac = i as f64 / (runs - 1) as f64;
+    1.0 / (tau * (0.6 + frac))
+}
+
+/// A move's policy code: the symmetry code, optionally XORed with a local-context
+/// term (see [`nrpa_local`]).
+#[inline]
+fn move_code(coder: &MoveCoder, scratch: &GameState, mv: &Move, local: bool) -> u64 {
+    let c = coder.code(mv);
+    if local {
+        c ^ local_code(&scratch.board, mv.pos)
+    } else {
+        c
+    }
 }
 
 /// Iterations per nesting level — NRPA uses the same N at every level, so we set
@@ -268,7 +361,7 @@ fn random_extension<R: rand::Rng>(
             order.extend_from_slice(&remaining); // safety net (valid games never hit this)
             break;
         }
-        let m = remaining.swap_remove(playable[rng.gen_range(0..playable.len())]);
+        let m = remaining.swap_remove(playable[rng.random_range(0..playable.len())]);
         placed.insert(m.pos);
         order.push(m);
     }
@@ -307,7 +400,7 @@ fn perturbation_search(
         .collect();
     let line_len = variant.len();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut total_nodes = 0u64;
     while search.running.load(Ordering::Relaxed) {
         search.wait_if_paused(); // idle here between perturbation rounds
@@ -321,13 +414,13 @@ fn perturbation_search(
         let parent: Vec<Move> = if archive.is_empty() {
             Vec::new()
         } else {
-            let g = archive[rng.gen_range(0..archive.len())].clone();
+            let g = archive[rng.random_range(0..archive.len())].clone();
             random_extension(&g, &cross, line_len, &mut rng)
         };
         let k_max = PERTURB_K_MAX
             .min(parent.len().saturating_sub(1))
             .max(PERTURB_K_MIN);
-        let k = rng.gen_range(PERTURB_K_MIN..=k_max);
+        let k = rng.random_range(PERTURB_K_MIN..=k_max);
         let round_secs = (k as f64 * PERTURB_SECS_PER_K).clamp(PERTURB_MIN_SECS, PERTURB_MAX_SECS);
         let prefix_len = parent.len().saturating_sub(k);
         let mut p = GameState::new(variant);
@@ -417,10 +510,11 @@ fn spawn_islands(
     search.running.store(true, Ordering::Relaxed);
     let n = iterations_for_level(level);
     let base_sym = build_base_sym(initial_state);
+    let base_sym = &base_sym; // capture a (Copy) reference in the move closures
     let runs = rayon::current_num_threads().max(1);
     rayon::scope(|s| {
-        for _ in 0..runs {
-            s.spawn(|_| island(level, n, initial_state, &base_sym, search, seed));
+        for i in 0..runs {
+            s.spawn(move |_| island(i, runs, level, n, initial_state, base_sym, search, seed));
         }
     });
     search.running.store(false, Ordering::Relaxed);
@@ -481,7 +575,10 @@ pub fn resume(search: Arc<SearchState>, checkpoint: crate::game::io::Checkpoint,
 /// supply the diversity a single converged policy lacks (NRPA converges to a
 /// local optimum and then stops improving). The global best accumulates across
 /// all islands and restarts via `record_best`.
+#[allow(clippy::too_many_arguments)]
 fn island(
+    idx: usize,
+    runs: usize,
     level: usize,
     n: usize,
     initial_state: &GameState,
@@ -489,6 +586,8 @@ fn island(
     search: &Arc<SearchState>,
     seed: Option<&Policy>,
 ) {
+    // This island's softmax temperature (portfolio spreads it by index).
+    TEMP_INV.with(|c| c.set(island_inv_temp(idx, runs)));
     // One clone for the island's lifetime. `playout`/`adapt` apply moves onto
     // this scratch and undo them, always restoring it to `initial_state` — so
     // there is no per-playout clone of the ~14 KB game state.
@@ -540,26 +639,37 @@ fn playout(
 ) -> Vec<Move> {
     let mut sym = base_sym.clone();
     let start = scratch.history.len();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
+    let b = gnrpa_beta();
+    let inv_temp = TEMP_INV.with(|c| c.get());
+    let local = nrpa_local();
+    // Buffers reused across every step of this playout (cleared per step) so the
+    // hottest loop in the search does no per-node heap allocation.
+    let mut moves: Vec<Move> = Vec::new();
+    let mut weights: Vec<f64> = Vec::new();
 
     loop {
         search.nodes_explored.fetch_add(1, Ordering::Relaxed);
-        let moves = legal_moves(scratch);
+        legal_moves_into(scratch, &mut moves);
         if moves.is_empty() {
             break;
         }
 
         // Softmax sampling (symmetry-invariant policy code per move). Build the
         // position coder once so canonical() isn't recomputed for every move.
+        // Unseen codes have weight exp(0)=1 exactly (when β is off), so we skip
+        // the transcendental for them — the common case while the policy is sparse.
         let coder = sym.move_coder();
-        let weights: Vec<f64> = moves
-            .iter()
-            .map(|mv| {
-                (policy.get(&coder.code(mv)).copied().unwrap_or(0.0) + beta(scratch, mv.pos)).exp()
-            })
-            .collect();
+        weights.clear();
+        weights.extend(moves.iter().map(|mv| {
+            match policy.get(&move_code(&coder, scratch, mv, local)) {
+                Some(&w) => ((w + beta(scratch, mv.pos)) * inv_temp).exp(),
+                None if b == 0.0 => 1.0,
+                None => (beta(scratch, mv.pos) * inv_temp).exp(),
+            }
+        }));
         let total: f64 = weights.iter().sum();
-        let mut r = rng.gen::<f64>() * total;
+        let mut r = rng.random::<f64>() * total;
         let mut chosen = moves.len() - 1;
         for (i, &w) in weights.iter().enumerate() {
             r -= w;
@@ -609,28 +719,52 @@ fn adapt(
 ) {
     let mut sym = base_sym.clone();
     let start = scratch.history.len();
+    let b = gnrpa_beta();
+    let inv_temp = TEMP_INV.with(|c| c.get());
+    let local = nrpa_local();
+    let clamp = nrpa_clamp();
+    // Reused per step (cleared each iteration). `codes` lets us hash each move's
+    // symmetry code once and reuse it for both the softmax and the update.
+    let mut moves: Vec<Move> = Vec::new();
+    let mut codes: Vec<u64> = Vec::new();
+    let mut exps: Vec<f64> = Vec::new();
 
     for &mv in best_seq {
-        let moves = legal_moves(scratch);
+        legal_moves_into(scratch, &mut moves);
         if moves.is_empty() {
             break;
         }
-        // Softmax over the legal moves, read BEFORE this step's update (each
-        // step touches distinct codes, so the running policy is clean). One
-        // coder per position avoids recomputing canonical() per move.
+        // Softmax over the legal moves, read BEFORE this step's update (each step
+        // touches distinct codes, so the running policy is clean). One coder per
+        // position; code each move once. Unseen codes contribute exp(0)=1 (β off).
         let coder = sym.move_coder();
-        let exps: Vec<f64> = moves
-            .iter()
-            .map(|m| {
-                (policy.get(&coder.code(m)).copied().unwrap_or(0.0) + beta(scratch, m.pos)).exp()
-            })
-            .collect();
+        codes.clear();
+        codes.extend(moves.iter().map(|m| move_code(&coder, scratch, m, local)));
+        exps.clear();
+        exps.extend(
+            codes
+                .iter()
+                .zip(&moves)
+                .map(|(code, m)| match policy.get(code) {
+                    Some(&w) => ((w + beta(scratch, m.pos)) * inv_temp).exp(),
+                    None if b == 0.0 => 1.0,
+                    None => (beta(scratch, m.pos) * inv_temp).exp(),
+                }),
+        );
         let z: f64 = exps.iter().sum();
 
-        // chosen += α ; each legal -= α · P(move).
-        *policy.entry(coder.code(&mv)).or_insert(0.0) += NRPA_ALPHA;
-        for (m, &e_m) in moves.iter().zip(&exps) {
-            *policy.entry(coder.code(m)).or_insert(0.0) -= NRPA_ALPHA * (e_m / z);
+        // chosen += α ; each legal -= α · P(move). Optionally clamp the touched
+        // logits to ±C (stabilization). The chosen code is among `codes`, so the
+        // loop also clamps it after its own decrement.
+        *policy
+            .entry(move_code(&coder, scratch, &mv, local))
+            .or_insert(0.0) += NRPA_ALPHA;
+        for (&code, &e_m) in codes.iter().zip(&exps) {
+            let e = policy.entry(code).or_insert(0.0);
+            *e -= NRPA_ALPHA * (e_m / z);
+            if let Some(c) = clamp {
+                *e = e.clamp(-c, c);
+            }
         }
 
         if !scratch.apply(mv) {
@@ -657,6 +791,7 @@ fn build_base_sym(state: &GameState) -> SymmetryHashes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::moves::legal_moves;
     use crate::game::{rules::Variant, state::GameState};
     use std::time::Duration;
 
