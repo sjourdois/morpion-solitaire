@@ -42,6 +42,9 @@ i18n-embed-fl = "0.10"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
 sys-locale = "0.3"
+# Physical-core count (P+E cores on Intel hybrid, excluding HyperThreading
+# siblings) to size the systematic search's worker pool — see `worker_cap`.
+num_cpus = "1"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 resvg = "0.47"          # rasterise the SVG renderer to PNG (CLI `show --png`)

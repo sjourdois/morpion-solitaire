@@ -118,6 +118,37 @@ impl std::fmt::Debug for LineIndex {
     }
 }
 
+/// Track key + position of a line, in internal coordinates (no `OFFSET` — it
+/// cancels in the same-track equality and position-difference tests below). Same
+/// decomposition as [`LineIndex::grid`]/`slot`, but on raw `Line`s.
+#[inline]
+fn track_pos(line: &Line) -> (i16, i16) {
+    let (x, y) = line.origin;
+    match line.dir {
+        Dir::H => (y, x),
+        Dir::V => (x, y),
+        Dir::DP => (x + y, x),
+        Dir::DN => (x - y, x),
+    }
+}
+
+/// Whether two lines violate the touch rule with each other (without consulting
+/// the index). Used in the incremental move generator: a move that was legal at
+/// the parent conflicts with nothing drawn so far, so after one new line is added
+/// it can only conflict with *that* line — a direct two-line test then avoids a
+/// per-candidate index lookup. Lines conflict only if same direction, same track,
+/// and within `forbid` positions (distance 0 = the exact same line). `forbid` is
+/// `W = line_len − max_overlap − 1` (see [`LineIndex::conflicts`]).
+#[inline]
+pub fn lines_conflict(a: &Line, b: &Line, forbid: u8) -> bool {
+    if a.dir != b.dir {
+        return false;
+    }
+    let (ta, pa) = track_pos(a);
+    let (tb, pb) = track_pos(b);
+    ta == tb && (pa - pb).unsigned_abs() <= forbid as u16
+}
+
 /// Bit-mask of positions `[pos − forbid, pos + forbid]`, clamped to `[0, GRID−1]`.
 #[inline]
 fn window_mask(pos: u8, forbid: u8) -> Row {

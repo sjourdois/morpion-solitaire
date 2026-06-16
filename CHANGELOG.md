@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Systematic search throughput ≈ 2.5× faster** (75.5M → 186M nodes/s on a
+  32-thread host; 240 → 83.5 ns/node single-thread), via exact, behaviour-
+  preserving hot-loop changes: the trace-canonical flag is now carried with the
+  legal set and updated in O(1) per move (eliminating `canonical_ok`'s O(depth)
+  history scan from the hot loop — it runs only at chunk roots); a carried move's
+  conflict check is a direct two-line test instead of an index lookup; the
+  horizontal occupancy strip in the incremental move generator is read as one
+  row shift+mask; and frame buffers are recycled through a pool.
+- The systematic worker pool is capped to the **physical**-core count on hybrid /
+  SMT hosts (HyperThreading and Intel E-cores add little to this compute-bound
+  work), keeping throughput while freeing logical cores for the UI.
+
 ## [0.1.4] — 2026-06-16
 
 Maintenance release: same application as 0.1.3, re-tagged to ship the pre-built

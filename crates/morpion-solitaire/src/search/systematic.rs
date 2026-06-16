@@ -28,9 +28,10 @@ use super::SearchState;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::game::io;
 use crate::game::{
-    board::Pos,
+    board::{Pos, OFFSET},
     line::{Dir, Line},
-    moves::{legal_moves, Move},
+    line_index::lines_conflict,
+    moves::{legal_moves, legal_moves_into, Move},
     rules::TouchMode,
     state::GameState,
 };
@@ -66,6 +67,16 @@ const CHUNK_BUDGET: u64 = 500_000;
 /// frontier holds and what a checkpoint will save.
 type WorkItem = Vec<Move>;
 
+/// A legal move at a node together with its **trace-canonical** flag (whether it
+/// is in trace normal form here — see [`canonical_ok`]). The flag is derived
+/// incrementally from the parent's, so the O(depth) history scan of
+/// `canonical_ok` runs only at chunk roots, never in the hot loop.
+#[derive(Clone, Copy)]
+struct Cand {
+    mv: Move,
+    canon: bool,
+}
+
 /// One level of an explicit (non-recursive) DFS: the canonical children of a
 /// node and how many we've already descended into, plus that node's stabiliser.
 struct Frame {
@@ -73,10 +84,12 @@ struct Frame {
     children: Vec<Move>,
     idx: usize,
     stab: u8,
-    /// Raw legal-move set at this node, carried so each child's set is derived
-    /// incrementally (parent set ± a local delta) instead of rescanning the
-    /// whole board — `legal_moves` is ~⅔ of a node's cost.
-    legal: Vec<Move>,
+    /// Raw legal-move set at this node (each with its trace-canonical flag),
+    /// carried so each child's set is derived incrementally (parent set ± a local
+    /// delta) instead of rescanning the whole board — `legal_moves` is ~⅔ of a
+    /// node's cost — and so each move's canonicity is an O(1) update of the
+    /// parent's flag instead of an O(depth) history scan.
+    legal: Vec<Cand>,
 }
 
 /// `forbid` parameter of the touch rule for `variant` (see `LineIndex::conflicts`).
@@ -88,15 +101,35 @@ fn forbid_of(variant: crate::game::rules::Variant) -> u8 {
     variant.len() - 1 - max_overlap
 }
 
-/// Canonical children of a node from its raw legal set: keep the trace-normal-form
-/// moves and (while symmetry remains) the orbit representatives.
-fn canonical_children(legal: &[Move], state: &GameState, stab: u8, k: i16, n: i16) -> Vec<Move> {
+/// Canonical children to descend into, from a node's legal set: keep the
+/// trace-canonical moves (precomputed `canon` flag) and, while symmetry remains,
+/// only the orbit representatives.
+fn canonical_children_into(out: &mut Vec<Move>, legal: &[Cand], stab: u8, k: i16, n: i16) {
+    out.clear();
     let symmetric = stab != NO_SYMMETRY;
-    legal
-        .iter()
-        .copied()
-        .filter(|mv| canonical_ok(mv, state) && (!symmetric || is_orbit_min(mv, stab, k, n)))
-        .collect()
+    out.extend(
+        legal
+            .iter()
+            .filter(|c| c.canon && (!symmetric || is_orbit_min(&c.mv, stab, k, n)))
+            .map(|c| c.mv),
+    );
+}
+
+/// Trace-canonical flags for a freshly-scanned legal set (chunk-root only): runs
+/// the O(depth) `canonical_ok` history scan once per move, then the search keeps
+/// the flags up to date incrementally (see [`child_legal_into`]).
+fn root_candidates(out: &mut Vec<Cand>, legal: &[Move], state: &GameState) {
+    out.clear();
+    out.extend(legal.iter().map(|&mv| Cand {
+        mv,
+        canon: canonical_ok(&mv, state),
+    }));
+}
+
+/// Take a cleared buffer from the pool, or a fresh one if the pool is empty.
+#[inline]
+fn take_buf<T>(pool: &mut Vec<Vec<T>>) -> Vec<T> {
+    pool.pop().unwrap_or_default()
 }
 
 /// Raw legal set of the child reached by playing `mv`, derived from the parent's
@@ -107,50 +140,78 @@ fn canonical_children(legal: &[Move], state: &GameState, stab: u8, k: i16, n: i1
 ///     `conflicts` test against the post-move index isolates `mv.line`);
 ///   • new moves can only appear in windows through `mv.pos` (the sole cell whose
 ///     occupancy changed).
-fn child_legal(
-    parent_legal: &[Move],
+/// Legal set (with canonical flags) of the child reached by playing `mv`,
+/// derived from the parent's set (cleared into `out`; `state` already has `mv`).
+///
+/// Each carried move's `canon` flag is updated in O(1): a carried move `m` cannot
+/// have `mv.pos` on its line (else `m` would have had two empty cells at the
+/// parent and not been legal), so prepending `mv` to the history only flips `m`
+/// to non-canonical when `mv.pos > m.pos` (a larger move now commutes ahead of
+/// it); otherwise the flag is unchanged. Newly-appearing moves all pass through
+/// `mv.pos`, so `mv` is their most-recent dependency — they are always canonical.
+fn child_legal_into(
+    out: &mut Vec<Cand>,
+    parent_legal: &[Cand],
     state: &GameState,
     mv: Move,
     forbid: u8,
     nu: usize,
-) -> Vec<Move> {
-    let mut out = Vec::with_capacity(parent_legal.len() + 8);
-    for &m in parent_legal {
-        if m.pos != mv.pos && !state.line_index.conflicts(&m.line, forbid) {
-            out.push(m);
+) {
+    out.clear();
+    for &c in parent_legal {
+        // A carried move was legal at the parent, so it conflicts with nothing
+        // drawn before `mv`; it survives unless it collides with `mv.pos` or with
+        // `mv.line` itself — a direct two-line test, no index lookup (and an
+        // instant reject when directions differ, the common case).
+        if c.mv.pos != mv.pos && !lines_conflict(&c.mv.line, &mv.line, forbid) {
+            let canon = c.canon && mv.pos <= c.mv.pos;
+            out.push(Cand { mv: c.mv, canon });
         }
     }
-    add_windows_through(&mut out, state, mv.pos, forbid, nu);
-    out
+    add_windows_through(out, state, mv.pos, forbid, nu);
 }
 
-/// Append every newly-legal move whose line passes through `p`: scan the `nu`
-/// windows per direction that contain `p`, keep those with exactly one empty
-/// cell and no line conflict. Mirrors the per-cell scalar generator, localised
-/// to `p` (each such window has `p` occupied, so it is emitted exactly once).
-fn add_windows_through(out: &mut Vec<Move>, state: &GameState, p: Pos, forbid: u8, nu: usize) {
+/// Append every newly-legal move whose line passes through `p`: the `nu` windows
+/// per direction that contain `p`, keeping those with exactly one empty cell and
+/// no line conflict. Each such window has `p` occupied, so it is emitted once.
+///
+/// For each direction we read the `2·nu−1`-cell occupancy *strip* centred on `p`
+/// once (bit `nu−1` = `p` itself), then each window is a contiguous `nu`-bit
+/// field of that strip: "exactly one empty" is a single-zero-bit test, sharing
+/// the strip across all `nu` overlapping windows instead of re-reading cells.
+/// `p` is an interior cell (the board margin = `nu−1`), so the strip never leaves
+/// the grid. `n ≤ 5` ⇒ the strip fits a `u16`.
+fn add_windows_through(out: &mut Vec<Cand>, state: &GameState, p: Pos, forbid: u8, nu: usize) {
+    let span = nu as i16 - 1; // p is at strip bit `span`
+    let full: u16 = (1 << nu) - 1; // a window's nu-bit mask at offset 0
+    let strip_mask: u16 = (1 << (2 * nu - 1)) - 1;
     for dir in Dir::ALL {
         let (dx, dy) = dir.delta();
-        for offset in 0..nu {
-            let origin = (p.0 - offset as i16 * dx, p.1 - offset as i16 * dy);
-            let mut occ = 0u8;
-            let mut empty_idx: Option<u8> = None;
-            let mut multi = false;
-            for kk in 0..nu {
-                let c = (origin.0 + kk as i16 * dx, origin.1 + kk as i16 * dy);
-                if state.board.contains(c) {
-                    occ += 1;
-                } else if empty_idx.is_none() {
-                    empty_idx = Some(kk as u8);
-                } else {
-                    multi = true;
-                    break;
+        let mut strip: u16 = 0;
+        if dy == 0 {
+            // Horizontal: the whole strip lies in one board row — read it in a
+            // single shift+mask instead of `2n−1` per-cell `contains` calls.
+            let gy = (p.1 + OFFSET) as usize;
+            let gx0 = (p.0 + OFFSET - span) as u32; // leftmost strip column
+            strip = (state.board.row(gy) >> gx0) as u16 & strip_mask;
+        } else {
+            for b in 0..(2 * nu - 1) {
+                let t = b as i16 - span;
+                if state.board.contains((p.0 + t * dx, p.1 + t * dy)) {
+                    strip |= 1 << b;
                 }
             }
-            if multi || occ != nu as u8 - 1 {
-                continue;
+        }
+        // Window `j` (p at position j within it) occupies strip bits
+        // [nu−1−j .. nu−1−j+nu−1]; its origin is `p − j·dir`.
+        for j in 0..nu {
+            let lo = (nu - 1 - j) as u32;
+            let zeros = !strip & (full << lo); // empty cells of this window
+            if zeros == 0 || zeros & (zeros - 1) != 0 {
+                continue; // not exactly one empty cell
             }
-            let empty_idx = empty_idx.unwrap();
+            let empty_idx = (zeros.trailing_zeros() - lo) as u8; // position in window
+            let origin = (p.0 - j as i16 * dx, p.1 - j as i16 * dy);
             let line = Line::new(origin, dir);
             if state.line_index.conflicts(&line, forbid) {
                 continue;
@@ -159,7 +220,12 @@ fn add_windows_through(out: &mut Vec<Move>, state: &GameState, p: Pos, forbid: u
                 origin.0 + empty_idx as i16 * dx,
                 origin.1 + empty_idx as i16 * dy,
             );
-            out.push(Move::new(new_pos, line, empty_idx));
+            // `p` (= mv.pos) is an occupied cell of this window, so the move just
+            // played is this new move's most-recent dependency ⇒ trace-canonical.
+            out.push(Cand {
+                mv: Move::new(new_pos, line, empty_idx),
+                canon: true,
+            });
         }
     }
 }
@@ -222,9 +288,50 @@ pub fn resume(search: Arc<SearchState>, checkpoint: io::Checkpoint) {
     );
 }
 
+/// Upper bound on systematic workers: the number of **physical** cores. On Intel
+/// hybrid CPUs (P + E cores) and any SMT/HyperThreading host, the per-node work
+/// is compute-bound, so HT siblings add almost nothing (measured ≈ +12% for
+/// doubling the P-core threads) and oversubscribing them is neutral-to-slightly
+/// negative. Capping to physical cores matches the measured throughput peak with
+/// fewer threads (less heat, logical threads free for the UI). The pool is only
+/// resized *down* — an explicit smaller `--threads` is still honoured.
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_cap() -> usize {
+    num_cpus::get_physical().max(1)
+}
+
+/// On wasm the worker count is governed by `wasm-bindgen-rayon`; no cap.
+#[cfg(target_arch = "wasm32")]
+fn worker_cap() -> usize {
+    usize::MAX
+}
+
 /// Drive the worker pool over a (possibly resumed) frontier until it drains or
-/// the search stops; serialise on each checkpoint request and continue.
+/// the search stops. If the ambient Rayon pool is larger than the physical-core
+/// count (a hybrid / SMT host running the default one-worker-per-logical-CPU
+/// pool), run the workers in a dedicated pool capped to physical cores; otherwise
+/// use the ambient pool as-is (honours an explicit, smaller `--threads`).
 fn drive_workers(
+    initial_state: &GameState,
+    init_stab: u8,
+    seed: Vec<WorkItem>,
+    search: &Arc<SearchState>,
+    k: i16,
+    n: i16,
+) {
+    let cap = worker_cap();
+    if cap < rayon::current_num_threads().max(1) {
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(cap).build() {
+            pool.install(|| run_workers(initial_state, init_stab, seed, search, k, n));
+            return;
+        }
+    }
+    run_workers(initial_state, init_stab, seed, search, k, n);
+}
+
+/// The worker-driving loop proper; runs in whatever Rayon pool it is called in
+/// (so `current_num_threads` reflects the capped pool when one is installed).
+fn run_workers(
     initial_state: &GameState,
     init_stab: u8,
     seed: Vec<WorkItem>,
@@ -379,9 +486,19 @@ fn explore_item(
     let forbid = forbid_of(initial.variant);
     let nu = n as usize;
 
+    // Recycled buffers: popped frames return their `children`/`legal` to the
+    // matching pool so child-set construction reuses allocations instead of
+    // malloc/free per node (one pool per element type).
+    let mut mpool: Vec<Vec<Move>> = Vec::new(); // `children` buffers
+    let mut cpool: Vec<Vec<Cand>> = Vec::new(); // `legal` buffers
+
     *local += 1; // the item's own node
-    let root_legal = legal_moves(&state); // full scan once at the chunk root
-    let root_children = canonical_children(&root_legal, &state, stab, k, n);
+    let mut root_legal = take_buf(&mut mpool);
+    legal_moves_into(&state, &mut root_legal); // full scan once at the chunk root
+    let mut root_cand = take_buf(&mut cpool);
+    root_candidates(&mut root_cand, &root_legal, &state); // O(depth) canon scan, once
+    let mut root_children = take_buf(&mut mpool);
+    canonical_children_into(&mut root_children, &root_cand, stab, k, n);
     if root_children.is_empty() {
         // Only a *truly terminal* position (no legal moves at all) is a game
         // result. With no canonical children but legal moves still available,
@@ -393,19 +510,22 @@ fn explore_item(
         }
         return;
     }
+    mpool.push(root_legal); // the raw root scan is consumed; recycle it
 
     let mut stack = vec![Frame {
         children: root_children,
         idx: 0,
         stab,
-        legal: root_legal,
+        legal: root_cand,
     }];
     let mut budget = CHUNK_BUDGET;
 
     while budget > 0 && search.running.load(Ordering::Relaxed) {
         let top = stack.last_mut().unwrap();
         if top.idx >= top.children.len() {
-            stack.pop();
+            let done = stack.pop().unwrap();
+            mpool.push(done.children); // recycle this frame's buffers
+            cpool.push(done.legal);
             if stack.is_empty() {
                 return; // subtree fully explored — nothing to push back
             }
@@ -427,12 +547,14 @@ fn explore_item(
             *local = 0;
         }
         // Derive the child's legal set incrementally from the parent's (`top`
-        // still borrows it; the borrow ends before the push below).
-        let child_lgl = child_legal(&top.legal, &state, mv, forbid, nu);
+        // still borrows it; the borrow ends before the push below). Both buffers
+        // come from a pool so the hot loop does no per-node allocation.
+        let mut child_lgl = take_buf(&mut cpool);
+        child_legal_into(&mut child_lgl, &top.legal, &state, mv, forbid, nu);
         #[cfg(debug_assertions)]
         {
             use std::collections::HashSet;
-            let got: HashSet<Move> = child_lgl.iter().copied().collect();
+            let got: HashSet<Move> = child_lgl.iter().map(|c| c.mv).collect();
             let want: HashSet<Move> = legal_moves(&state).into_iter().collect();
             debug_assert_eq!(
                 got, want,
@@ -443,8 +565,17 @@ fn explore_item(
                 child_lgl.len(),
                 "duplicate in incremental legal set"
             );
+            for c in &child_lgl {
+                debug_assert_eq!(
+                    c.canon,
+                    canonical_ok(&c.mv, &state),
+                    "incremental canon flag diverged from canonical_ok for {:?}",
+                    c.mv
+                );
+            }
         }
-        let children = canonical_children(&child_lgl, &state, child_stab, k, n);
+        let mut children = take_buf(&mut mpool);
+        canonical_children_into(&mut children, &child_lgl, child_stab, k, n);
         if children.is_empty() {
             // Record only true terminals (see the root case above): a leaf with
             // no canonical children but a non-empty legal set is not terminal.
@@ -452,6 +583,8 @@ fn explore_item(
                 search.record_best(state.score() as u32, state.history.clone());
             }
             state.undo();
+            cpool.push(child_lgl); // recycle: this leaf spawned no frame
+            mpool.push(children);
         } else {
             stack.push(Frame {
                 children,
@@ -548,6 +681,22 @@ mod bench {
     use std::hint::black_box;
     use std::time::Instant;
 
+    /// Build the root DFS frame for `state` (full legal scan + canon flags +
+    /// canonical children), mirroring `explore_item`'s chunk-root setup.
+    fn root_frame(state: &GameState, stab: u8, k: i16, n: i16) -> Frame {
+        let raw = legal_moves(state);
+        let mut legal = Vec::new();
+        root_candidates(&mut legal, &raw, state);
+        let mut children = Vec::new();
+        canonical_children_into(&mut children, &legal, stab, k, n);
+        Frame {
+            children,
+            idx: 0,
+            stab,
+            legal,
+        }
+    }
+
     /// Release-safe divergence check: walk a bounded DFS and compare
     /// `child_legal` to `legal_moves` at every node. The debug_assertions
     /// block in `explore_item` only runs in debug builds; this test runs in
@@ -564,19 +713,13 @@ mod bench {
         let forbid = forbid_of(state.variant);
         let nu = n as usize;
 
-        let root_legal = legal_moves(&state);
-        let root_children = canonical_children(&root_legal, &state, init_stab, k, n);
-        let mut stack: Vec<Frame> = vec![Frame {
-            children: root_children,
-            idx: 0,
-            stab: init_stab,
-            legal: root_legal,
-        }];
+        let mut stack: Vec<Frame> = vec![root_frame(&state, init_stab, k, n)];
         let mut nodes = 0u64;
         // 50 K nodes: fast in both debug and release; covers depths up to ~20 which
         // is enough to exercise the incremental set across many branch points.
         const NODE_LIMIT: u64 = 50_000;
 
+        let mut incremental = Vec::new();
         while nodes < NODE_LIMIT {
             let top = stack.last_mut().unwrap();
             if top.idx >= top.children.len() {
@@ -593,10 +736,17 @@ mod bench {
             state.apply(mv);
             nodes += 1;
 
-            let incremental = child_legal(&stack.last().unwrap().legal, &state, mv, forbid, nu);
+            child_legal_into(
+                &mut incremental,
+                &stack.last().unwrap().legal,
+                &state,
+                mv,
+                forbid,
+                nu,
+            );
             let full: Vec<Move> = legal_moves(&state);
 
-            let inc_set: HashSet<Move> = incremental.iter().copied().collect();
+            let inc_set: HashSet<Move> = incremental.iter().map(|c| c.mv).collect();
             let full_set: HashSet<Move> = full.iter().copied().collect();
             assert_eq!(
                 inc_set,
@@ -615,8 +765,19 @@ mod bench {
                 "duplicate in incremental legal set at depth {}",
                 state.history.len()
             );
+            // The incrementally-derived canon flag must match a fresh scan.
+            for c in &incremental {
+                assert_eq!(
+                    c.canon,
+                    canonical_ok(&c.mv, &state),
+                    "incremental canon flag diverged at depth {} for {:?}",
+                    state.history.len(),
+                    c.mv,
+                );
+            }
 
-            let children = canonical_children(&incremental, &state, cstab, k, n);
+            let mut children = Vec::new();
+            canonical_children_into(&mut children, &incremental, cstab, k, n);
             if children.is_empty() {
                 state.undo();
             } else {
@@ -624,7 +785,7 @@ mod bench {
                     children,
                     idx: 0,
                     stab: cstab,
-                    legal: incremental,
+                    legal: std::mem::take(&mut incremental),
                 });
             }
         }
@@ -653,14 +814,7 @@ mod bench {
         let mut count = vec![0u64; cap + 1];
         count[0] = 1; // the cross
         let mut state = st.clone();
-        let root_legal = legal_moves(&state);
-        let root = canonical_children(&root_legal, &state, init_stab, k, n);
-        let mut stack = vec![Frame {
-            children: root,
-            idx: 0,
-            stab: init_stab,
-            legal: root_legal,
-        }];
+        let mut stack = vec![root_frame(&state, init_stab, k, n)];
         while let Some(top) = stack.last_mut() {
             if top.idx >= top.children.len() {
                 stack.pop();
@@ -676,8 +830,10 @@ mod bench {
             let d = state.history.len();
             count[d] += 1;
             if d < cap {
-                let child_lgl = child_legal(&top.legal, &state, mv, forbid, nu);
-                let children = canonical_children(&child_lgl, &state, cstab, k, n);
+                let mut child_lgl = Vec::new();
+                child_legal_into(&mut child_lgl, &top.legal, &state, mv, forbid, nu);
+                let mut children = Vec::new();
+                canonical_children_into(&mut children, &child_lgl, cstab, k, n);
                 if children.is_empty() {
                     state.undo();
                 } else {
@@ -829,6 +985,224 @@ mod bench {
             state.apply(mv);
         }
         state
+    }
+
+    /// Decompose the per-node cost into its parts on a representative mid-game
+    /// node, so hot-loop effort targets the real cost (measure, don't assume).
+    #[test]
+    #[ignore = "timing benchmark, run with --ignored --nocapture"]
+    fn bench_node_breakdown() {
+        let parent = mid_game(25);
+        let n = parent.variant.len() as i16;
+        let k = 2 * n - 1;
+        let nu = n as usize;
+        let forbid = forbid_of(parent.variant);
+
+        let parent_legal = legal_moves(&parent);
+        assert!(!parent_legal.is_empty());
+        let mut parent_cand = Vec::new();
+        root_candidates(&mut parent_cand, &parent_legal, &parent);
+        let mv = parent_legal[0];
+        let mut state = parent.clone();
+        state.apply(mv);
+        let stab = NO_SYMMETRY; // realistic: symmetry is gone after move 1
+        let mut child_lgl = Vec::new();
+        child_legal_into(&mut child_lgl, &parent_cand, &state, mv, forbid, nu);
+
+        let iters = 5_000_000u64;
+        let bench = |name: &str, mut f: Box<dyn FnMut() -> usize>| {
+            for _ in 0..10_000 {
+                black_box(f());
+            }
+            let t = Instant::now();
+            let mut acc = 0usize;
+            for _ in 0..iters {
+                acc += black_box(f());
+            }
+            println!(
+                "  {name:<22} {:.1} ns  (acc={acc})",
+                t.elapsed().as_secs_f64() * 1e9 / iters as f64
+            );
+        };
+
+        println!(
+            "BREAKDOWN at depth {} ({} cells, parent_legal={}, child_legal={}):",
+            state.history.len(),
+            state.board.len(),
+            parent_legal.len(),
+            child_lgl.len(),
+        );
+        {
+            let (pl, st) = (parent_cand.clone(), state.clone());
+            let mut out = Vec::new();
+            bench(
+                "child_legal_into",
+                Box::new(move || {
+                    child_legal_into(&mut out, &pl, &st, mv, forbid, nu);
+                    out.len()
+                }),
+            );
+        }
+        {
+            let st = state.clone();
+            let mut out = Vec::new();
+            bench(
+                "add_windows_through",
+                Box::new(move || {
+                    out.clear();
+                    add_windows_through(&mut out, &st, mv.pos, forbid, nu);
+                    out.len()
+                }),
+            );
+        }
+        {
+            let cl = child_lgl.clone();
+            let mut out = Vec::new();
+            bench(
+                "canonical_children_into",
+                Box::new(move || {
+                    canonical_children_into(&mut out, &cl, stab, k, n);
+                    out.len()
+                }),
+            );
+        }
+        {
+            let (cl, st) = (child_lgl.clone(), state.clone());
+            bench(
+                "canonical_ok (per set)",
+                Box::new(move || cl.iter().filter(|c| canonical_ok(&c.mv, &st)).count()),
+            );
+        }
+        {
+            let mut s = parent.clone();
+            bench(
+                "apply+undo",
+                Box::new(move || {
+                    s.apply(mv);
+                    s.undo();
+                    s.board.len()
+                }),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "timing benchmark, run with --ignored --nocapture"]
+    fn bench_single_thread_node() {
+        const BUDGET: u64 = 60_000_000;
+        let st = GameState::new(Variant::T5);
+        let n = st.variant.len() as i16;
+        let k = 2 * n - 1;
+        let nu = n as usize;
+        let forbid = forbid_of(st.variant);
+        let init_stab = initial_stabilizer(&st, k, n);
+
+        let mut state = st.clone();
+        let mut mpool: Vec<Vec<Move>> = Vec::new();
+        let mut cpool: Vec<Vec<Cand>> = Vec::new();
+        let mut root_legal = take_buf(&mut mpool);
+        legal_moves_into(&state, &mut root_legal);
+        let mut root_cand = take_buf(&mut cpool);
+        root_candidates(&mut root_cand, &root_legal, &state);
+        let mut root = take_buf(&mut mpool);
+        canonical_children_into(&mut root, &root_cand, init_stab, k, n);
+        mpool.push(root_legal);
+        let mut stack = vec![Frame {
+            children: root,
+            idx: 0,
+            stab: init_stab,
+            legal: root_cand,
+        }];
+        let mut nodes = 0u64;
+        let t0 = Instant::now();
+        while nodes < BUDGET {
+            let top = stack.last_mut().unwrap();
+            if top.idx >= top.children.len() {
+                let done = stack.pop().unwrap();
+                mpool.push(done.children);
+                cpool.push(done.legal);
+                if stack.is_empty() {
+                    break;
+                }
+                state.undo();
+                continue;
+            }
+            let mv = top.children[top.idx];
+            top.idx += 1;
+            let cstab = stab_after(top.stab, &mv, k, n);
+            state.apply(mv);
+            nodes += 1;
+            let mut child_lgl = take_buf(&mut cpool);
+            child_legal_into(&mut child_lgl, &top.legal, &state, mv, forbid, nu);
+            let mut children = take_buf(&mut mpool);
+            canonical_children_into(&mut children, &child_lgl, cstab, k, n);
+            if children.is_empty() {
+                state.undo();
+                cpool.push(child_lgl);
+                mpool.push(children);
+            } else {
+                stack.push(Frame {
+                    children,
+                    idx: 0,
+                    stab: cstab,
+                    legal: child_lgl,
+                });
+            }
+        }
+        let dt = t0.elapsed().as_secs_f64();
+        println!(
+            "BENCH single-thread: nodes={nodes} rate={:.0} nodes/s ({:.1} ns/node)",
+            nodes as f64 / dt,
+            dt * 1e9 / nodes as f64,
+        );
+    }
+
+    /// Parallel scaling curve: run the real search inside a Rayon pool of N
+    /// threads (drive_workers reads `current_num_threads`/`scope`, so this sizes
+    /// the worker count), measure nodes/s per N, and report speedup + efficiency
+    /// vs the 1-thread rate. Shows where the frontier/`active` contention or
+    /// starvation bends the curve away from linear.
+    #[test]
+    #[ignore = "measurement, run with --ignored --nocapture"]
+    fn bench_scaling() {
+        use std::time::Duration;
+        let secs = 3.0;
+        let max = rayon::current_num_threads();
+        let mut threads: Vec<usize> = [1, 2, 4, 8, 16, 32, 48, 64]
+            .into_iter()
+            .filter(|&t| t <= max)
+            .collect();
+        if !threads.contains(&max) {
+            threads.push(max);
+        }
+        println!("SCALING ({secs}s per point, host max {max} threads):");
+        let mut base = 0.0;
+        for nt in threads {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(nt)
+                .build()
+                .unwrap();
+            let search = SearchState::new();
+            let st = GameState::new(Variant::T5);
+            let stopper = search.clone();
+            let h = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs_f64(secs));
+                stopper.running.store(false, Ordering::Relaxed);
+            });
+            let run_search = search.clone();
+            pool.install(move || run(&st, run_search));
+            h.join().unwrap();
+            let n = search.nodes_explored.load(Ordering::Relaxed);
+            let rate = n as f64 / secs;
+            if nt == 1 {
+                base = rate;
+            }
+            println!(
+                "  {nt:>3} thr: {rate:>14.0} nodes/s   speedup {:>5.1}x   eff {:>4.0}%",
+                rate / base,
+                100.0 * rate / base / nt as f64,
+            );
+        }
     }
 
     #[test]
