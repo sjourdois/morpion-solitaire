@@ -221,6 +221,11 @@ pub fn is_orbit_min(m: &Move, stab: u8, k: i16, n: i16) -> bool {
 /// (same point and same line). It can only shrink, and is identity-only once
 /// the position becomes asymmetric.
 pub fn stab_after(stab: u8, m: &Move, k: i16, n: i16) -> u8 {
+    // Overwhelmingly common case: the position is already asymmetric (identity
+    // only), so the result is identity only — skip the two key computations.
+    if stab == 0b0000_0001 {
+        return 0b0000_0001;
+    }
     let key0 = transformed_move_key(0, m, k, n);
     let mut out = 0u8;
     for t in 0..8 {
