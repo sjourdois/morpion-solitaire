@@ -1,6 +1,6 @@
 [package]
 name = "morpion-solitaire"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 # No MSRV pledge for the application (it tracks current stable). The reusable
 # `morpion-solitaire-record` library does declare one.

@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.5] — 2026-06-17
 
 ### Changed
 
@@ -19,6 +19,14 @@ All notable changes to this project are documented here. The format is based on
 - The systematic worker pool is capped to the **physical**-core count on hybrid /
   SMT hosts (HyperThreading and Intel E-cores add little to this compute-bound
   work), keeping throughput while freeing logical cores for the UI.
+
+### Added
+
+- Experimental NRPA tuning knobs for offline search-quality campaigns, **all off
+  by default** (no change to normal `nrpa` / `perturbation` runs): per-level
+  iteration count, adaptation step, a corpus-learned local move prior, a
+  logit-clamp portfolio across islands, perturbation destroy-size / repair
+  warm-start controls, and self-improving warm restarts.
 
 ## [0.1.4] — 2026-06-16
 
@@ -80,6 +88,7 @@ the partly-published release left the `v0.1.3` tag unusable for a GitHub Release
 - Touch input on phones and tablets (the canvas treated taps as scroll/zoom), and
   the controls panel is now usable on narrow screens.
 
+[0.1.5]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.3
 
