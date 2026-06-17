@@ -159,7 +159,11 @@ fn beta(state: &GameState, pos: Pos) -> f64 {
     }
     let cb = nrpa_corpus();
     if cb != 0.0 {
-        bias += cb * corpus_prior().get(&local_code(&state.board, pos)).copied().unwrap_or(0.0);
+        bias += cb
+            * corpus_prior()
+                .get(&local_code(&state.board, pos))
+                .copied()
+                .unwrap_or(0.0);
     }
     bias
 }
@@ -1192,7 +1196,11 @@ mod tests {
         if seed_len > 0 && seed_len < seed.len() {
             seed.truncate(seed_len);
         }
-        println!("seed={seed_name} len={} (used {})", rec.history.len(), seed.len());
+        println!(
+            "seed={seed_name} len={} (used {})",
+            rec.history.len(),
+            seed.len()
+        );
 
         let mut bests: Vec<u32> = Vec::with_capacity(runs);
         for r in 0..runs {
