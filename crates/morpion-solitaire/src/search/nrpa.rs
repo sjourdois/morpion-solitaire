@@ -33,7 +33,20 @@ use crate::game::{
     state::GameState,
 };
 
-const NRPA_ALPHA: f64 = 1.0; // policy adaptation step size (sweet spot; 0.5 and 2.0 both regress to ~92)
+/// Policy adaptation step size α. Default 1.0 (the unclamped sweet spot; 0.5 and
+/// 2.0 both regressed to ~92 *without* clamping). Clamping changes the dynamics,
+/// so `NRPA_ALPHA` re-opens it for sweeping under clamp. Read once.
+fn nrpa_alpha() -> f64 {
+    use std::sync::OnceLock;
+    static A: OnceLock<f64> = OnceLock::new();
+    *A.get_or_init(|| {
+        std::env::var("NRPA_ALPHA")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&a: &f64| a > 0.0)
+            .unwrap_or(1.0)
+    })
+}
 
 /// GNRPA prior-bias strength (per occupied neighbour). 0 ⇒ plain NRPA.
 /// Overridable via the GNRPA_BETA env var for sweeps (read once).
@@ -48,37 +61,107 @@ fn gnrpa_beta() -> f64 {
     })
 }
 
+/// Corpus-learned local prior strength (`NRPA_CORPUS`, default 0 = off). Scales
+/// the imitation bias built by [`corpus_prior`] before it enters the softmax.
+fn nrpa_corpus() -> f64 {
+    use std::sync::OnceLock;
+    static C: OnceLock<f64> = OnceLock::new();
+    *C.get_or_init(|| {
+        std::env::var("NRPA_CORPUS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0)
+    })
+}
+
+/// Is any GNRPA prior active? When false (the default), the hot loops take the
+/// fast path: an unseen policy code has softmax weight exp(0)=1 with no scan.
+#[inline]
+fn prior_active() -> bool {
+    gnrpa_beta() != 0.0 || nrpa_corpus() != 0.0
+}
+
+/// Imitation prior learned from the record corpus (GNRPA "done right"): a log-odds
+/// bias per **symmetry-invariant local neighbourhood** ([`local_code`]). For every
+/// move played in a record game we tally its local pattern as *chosen*, and every
+/// legal alternative's pattern as *available*; the bias of a pattern is
+/// `ln((chosen+1)/(available+1))`, so patterns over-represented among record moves
+/// get a positive softmax nudge. A constant shift across patterns is irrelevant
+/// (softmax is shift-invariant), so no normaliser is needed. Built once, lazily.
+///
+/// This is the corpus-learned variant of the local feature; the hand-set
+/// neighbour-count β and the raw local code (as move *identity*) both failed, but
+/// a *learned* prior injected as β is the untried, higher-upside form.
+fn corpus_prior() -> &'static Policy {
+    use std::sync::OnceLock;
+    static P: OnceLock<Policy> = OnceLock::new();
+    P.get_or_init(build_corpus_prior)
+}
+
+fn build_corpus_prior() -> Policy {
+    use crate::game::moves::legal_moves;
+    let mut chosen: Policy = Policy::default();
+    let mut avail: Policy = Policy::default();
+    for rec in morpion_solitaire_records::RECORDS.iter() {
+        let Ok(g) = crate::game::io::import_save(rec.2) else {
+            continue;
+        };
+        if g.variant != crate::game::rules::Variant::T5 {
+            continue; // keep the prior 5T-specific (the campaign's target variant)
+        }
+        let mut st = GameState::new(g.variant);
+        for &mv in &g.history {
+            let lm = legal_moves(&st);
+            if !lm.contains(&mv) {
+                break; // record diverges from our rules (shouldn't happen) — stop
+            }
+            for m in &lm {
+                *avail.entry(local_code(&st.board, m.pos)).or_insert(0.0) += 1.0;
+            }
+            *chosen.entry(local_code(&st.board, mv.pos)).or_insert(0.0) += 1.0;
+            st.apply(mv);
+        }
+    }
+    let mut prior = Policy::default();
+    for (&f, &a) in &avail {
+        let c = chosen.get(&f).copied().unwrap_or(0.0);
+        prior.insert(f, ((c + 1.0) / (a + 1.0)).ln());
+    }
+    prior
+}
+
 /// GNRPA prior bias β(move): a fixed log-space preference added to a move's
-/// learned weight in the softmax (Cazenave's Generalized NRPA). The framework is
-/// correct (β=0 reproduces plain NRPA exactly), but this particular feature —
-/// local connectedness (occupied 8-neighbours) — did NOT help in testing:
-/// strong β (0.2) caused premature convergence (flat ~94 vs plain's ~99), and
-/// weak β was lost in NRPA's large run-to-run variance. So it ships OFF by
-/// default (`GNRPA_BETA=0`); the env knob is kept for future experiments with
-/// better-motivated, averaged-over-many-runs features. The neighbour count is
-/// symmetry-invariant (preserved by every D4 transform), so a non-zero bias
-/// would stay consistent with the symmetry-invariant policy coding.
+/// learned weight in the softmax (Cazenave's Generalized NRPA). β=0 reproduces
+/// plain NRPA exactly. Two optional features combine here: the hand-set
+/// neighbour-count term (`GNRPA_BETA`, historically unhelpful) and the
+/// corpus-learned local prior (`NRPA_CORPUS`, see [`corpus_prior`]). Both keys are
+/// symmetry-invariant, so the bias stays consistent with the policy coding.
 #[inline]
 fn beta(state: &GameState, pos: Pos) -> f64 {
-    let b = gnrpa_beta();
-    if b == 0.0 {
-        return 0.0; // GNRPA off (default): skip the neighbour scan entirely.
+    let mut bias = 0.0;
+    let gb = gnrpa_beta();
+    if gb != 0.0 {
+        const NEIGHBOURS: [(i16, i16); 8] = [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, -1),
+            (-1, 1),
+            (1, 1),
+            (-1, -1),
+        ];
+        let occ = NEIGHBOURS
+            .iter()
+            .filter(|&&(dx, dy)| state.board.contains((pos.0 + dx, pos.1 + dy)))
+            .count();
+        bias += gb * occ as f64;
     }
-    const NEIGHBOURS: [(i16, i16); 8] = [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, -1),
-        (-1, 1),
-        (1, 1),
-        (-1, -1),
-    ];
-    let occ = NEIGHBOURS
-        .iter()
-        .filter(|&&(dx, dy)| state.board.contains((pos.0 + dx, pos.1 + dy)))
-        .count();
-    b * occ as f64
+    let cb = nrpa_corpus();
+    if cb != 0.0 {
+        bias += cb * corpus_prior().get(&local_code(&state.board, pos)).copied().unwrap_or(0.0);
+    }
+    bias
 }
 
 // NRPA tuning knobs (env). NRPA_TEMP, NRPA_LOCAL and NRPA_PORTFOLIO are
@@ -146,6 +229,33 @@ fn nrpa_portfolio() -> bool {
 thread_local! {
     /// 1/τ for the current island's playouts and adapts (set in `island`).
     static TEMP_INV: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+    /// Per-island clamp override (set in `island` when the clamp portfolio is on);
+    /// `None` ⇒ use the global [`nrpa_clamp`]. Lets diverse islands stabilize at
+    /// different C, so the *global best* (what record hunting wants) benefits from
+    /// whichever C suits a given run, not a single compromise C.
+    static CLAMP_OVERRIDE: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Clamp portfolio (`NRPA_CLAMP_PORTFOLIO=1`, default off): spread each island's
+/// logit clamp C linearly over [2, 5] by island index instead of all sharing the
+/// global C. Diversity aimed at the global max (the record-relevant metric).
+fn nrpa_clamp_portfolio() -> bool {
+    use std::sync::OnceLock;
+    static P: OnceLock<bool> = OnceLock::new();
+    *P.get_or_init(|| {
+        std::env::var("NRPA_CLAMP_PORTFOLIO")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
+/// This island's clamp C under the portfolio: linear over [2, 5] across islands.
+fn island_clamp(i: usize, runs: usize) -> Option<f64> {
+    if !nrpa_clamp_portfolio() || runs <= 1 {
+        return None; // fall back to the global clamp
+    }
+    let frac = i as f64 / (runs - 1) as f64;
+    Some(2.0 + 3.0 * frac)
 }
 
 /// Temperature inverse for island `i` of `runs`: the global τ, or a spread over
@@ -179,6 +289,19 @@ fn move_code(coder: &MoveCoder, scratch: &GameState, mv: &Move, local: bool) -> 
 /// iterating instead of stalling inside one sub-search. Deeper levels learn more
 /// cumulatively but only pay off over very long (multi-hour) runs.
 fn iterations_for_level(level: usize) -> usize {
+    // NRPA uses one N at every level, set once from the top level; `NRPA_ITERS`
+    // overrides it directly so N can be swept per level under clamp (the defaults
+    // were tuned UNCLAMPED, so the sweet spots likely shifted). Read once.
+    use std::sync::OnceLock;
+    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
+    if let Some(n) = *OVERRIDE.get_or_init(|| {
+        std::env::var("NRPA_ITERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| n > 0)
+    }) {
+        return n;
+    }
     match level {
         0..=3 => 500,
         4 => 64, // 64³ ≈ 262k
@@ -245,13 +368,34 @@ fn build_warm_policy(initial: &GameState, seq: &[Move], iters: usize) -> Policy 
     policy
 }
 
-/// Perturbation destroy size K is drawn uniformly from this range each round —
-/// a mix of small local refinements and large restructures. Capped to the
-/// current game length.
+/// Perturbation destroy size K is drawn uniformly from `[K_MIN, K_MAX]` each
+/// round — a mix of small local refinements and large restructures, capped to the
+/// current game length. The destroy-size distribution is the biggest perturbation
+/// lever, so both bounds are env-tunable (`PERTURB_KMIN` / `PERTURB_KMAX`).
 #[cfg(not(target_arch = "wasm32"))]
-const PERTURB_K_MIN: usize = 8;
+fn perturb_k_min() -> usize {
+    use std::sync::OnceLock;
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("PERTURB_KMIN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&k| k >= 1)
+            .unwrap_or(8)
+    })
+}
 #[cfg(not(target_arch = "wasm32"))]
-const PERTURB_K_MAX: usize = 70;
+fn perturb_k_max() -> usize {
+    use std::sync::OnceLock;
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("PERTURB_KMAX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&k| k >= 1)
+            .unwrap_or(70)
+    })
+}
 
 /// Effort (round duration) scales with K: a tiny completion needs only a couple
 /// of seconds, a 70-move reconstruction much more. `secs = K · per_k`, clamped.
@@ -267,8 +411,35 @@ const PERTURB_MAX_SECS: f64 = 30.0;
 /// keeps every distinct game whose score is within `WINDOW` of the best seen
 /// (so it holds a band of near-best games — diversity + escape room), capped at
 /// `ARCHIVE_MAX`. A tabu set of game keys avoids re-processing duplicates.
+/// Warm-start strength for a perturbation **repair** (`PERTURB_WARM`, default
+/// `WARM_ITERS`=10): adapt passes pre-training the repair policy toward the
+/// destroyed suffix. High values bias the repair to *replay* the old ending
+/// (good for exploiting a known-strong seed, bad for genuinely improving it); 0
+/// makes the repair a cold re-search of new completions. The key knob for the
+/// "perturbation just rebuilds the seed" trivial-replay trap.
 #[cfg(not(target_arch = "wasm32"))]
-const PERTURB_WINDOW: usize = 10;
+fn perturb_warm() -> usize {
+    use std::sync::OnceLock;
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("PERTURB_WARM")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(WARM_ITERS)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn perturb_window() -> usize {
+    use std::sync::OnceLock;
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("PERTURB_WINDOW")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10)
+    })
+}
 #[cfg(not(target_arch = "wasm32"))]
 const PERTURB_ARCHIVE_MAX: usize = 20_000;
 
@@ -417,10 +588,10 @@ fn perturbation_search(
             let g = archive[rng.random_range(0..archive.len())].clone();
             random_extension(&g, &cross, line_len, &mut rng)
         };
-        let k_max = PERTURB_K_MAX
+        let k_max = perturb_k_max()
             .min(parent.len().saturating_sub(1))
-            .max(PERTURB_K_MIN);
-        let k = rng.random_range(PERTURB_K_MIN..=k_max);
+            .max(perturb_k_min());
+        let k = rng.random_range(perturb_k_min()..=k_max);
         let round_secs = (k as f64 * PERTURB_SECS_PER_K).clamp(PERTURB_MIN_SECS, PERTURB_MAX_SECS);
         let prefix_len = parent.len().saturating_sub(k);
         let mut p = GameState::new(variant);
@@ -432,7 +603,8 @@ fn perturbation_search(
         // Inner warm NRPA search over completions of P, time-bounded by the loop.
         let inner = SearchState::new();
         let inner2 = inner.clone();
-        let h = std::thread::spawn(move || run_warm(&p, inner2, level, &suffix, WARM_ITERS));
+        let warm = perturb_warm();
+        let h = std::thread::spawn(move || run_warm(&p, inner2, level, &suffix, warm));
         let t0 = Instant::now();
         while t0.elapsed().as_secs_f64() < round_secs && search.running.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(100));
@@ -453,9 +625,9 @@ fn perturbation_search(
                 max_score = score;
                 search.record_best(score as u32, cand.clone());
             }
-            if score + PERTURB_WINDOW >= max_score {
+            if score + perturb_window() >= max_score {
                 archive.push(cand);
-                let cutoff = max_score.saturating_sub(PERTURB_WINDOW);
+                let cutoff = max_score.saturating_sub(perturb_window());
                 archive.retain(|g| g.len() >= cutoff); // drop games now below the band
                 if archive.len() > PERTURB_ARCHIVE_MAX {
                     if let Some(i) = (0..archive.len()).min_by_key(|&i| archive[i].len()) {
@@ -586,8 +758,9 @@ fn island(
     search: &Arc<SearchState>,
     seed: Option<&Policy>,
 ) {
-    // This island's softmax temperature (portfolio spreads it by index).
+    // This island's softmax temperature and clamp (portfolios spread them by idx).
     TEMP_INV.with(|c| c.set(island_inv_temp(idx, runs)));
+    CLAMP_OVERRIDE.with(|c| c.set(island_clamp(idx, runs)));
     // One clone for the island's lifetime. `playout`/`adapt` apply moves onto
     // this scratch and undo them, always restoring it to `initial_state` — so
     // there is no per-playout clone of the ~14 KB game state.
@@ -640,7 +813,7 @@ fn playout(
     let mut sym = base_sym.clone();
     let start = scratch.history.len();
     let mut rng = rand::rng();
-    let b = gnrpa_beta();
+    let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
     // Buffers reused across every step of this playout (cleared per step) so the
@@ -664,7 +837,7 @@ fn playout(
         weights.extend(moves.iter().map(|mv| {
             match policy.get(&move_code(&coder, scratch, mv, local)) {
                 Some(&w) => ((w + beta(scratch, mv.pos)) * inv_temp).exp(),
-                None if b == 0.0 => 1.0,
+                None if !prior => 1.0,
                 None => (beta(scratch, mv.pos) * inv_temp).exp(),
             }
         }));
@@ -719,10 +892,15 @@ fn adapt(
 ) {
     let mut sym = base_sym.clone();
     let start = scratch.history.len();
-    let b = gnrpa_beta();
+    let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
-    let clamp = nrpa_clamp();
+    // Per-island portfolio clamp if set, else the global default.
+    let clamp = match CLAMP_OVERRIDE.with(|c| c.get()) {
+        Some(c) => Some(c),
+        None => nrpa_clamp(),
+    };
+    let alpha = nrpa_alpha();
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
     let mut moves: Vec<Move> = Vec::new();
@@ -747,7 +925,7 @@ fn adapt(
                 .zip(&moves)
                 .map(|(code, m)| match policy.get(code) {
                     Some(&w) => ((w + beta(scratch, m.pos)) * inv_temp).exp(),
-                    None if b == 0.0 => 1.0,
+                    None if !prior => 1.0,
                     None => (beta(scratch, m.pos) * inv_temp).exp(),
                 }),
         );
@@ -758,10 +936,10 @@ fn adapt(
         // loop also clamps it after its own decrement.
         *policy
             .entry(move_code(&coder, scratch, &mv, local))
-            .or_insert(0.0) += NRPA_ALPHA;
+            .or_insert(0.0) += alpha;
         for (&code, &e_m) in codes.iter().zip(&exps) {
             let e = policy.entry(code).or_insert(0.0);
-            *e -= NRPA_ALPHA * (e_m / z);
+            *e -= alpha * (e_m / z);
             if let Some(c) = clamp {
                 *e = e.clamp(-c, c);
             }
@@ -947,6 +1125,70 @@ mod tests {
             );
         }
         println!("FINAL best={}", best.len());
+    }
+
+    /// Averaged perturbation-from-seed benchmark (the real large-neighbourhood
+    /// path). Seeds the archive from rosin178 truncated to `SEED_LEN` (so there is
+    /// real room to climb, below the 178 ceiling), runs the actual archive-based
+    /// `run_perturbation` for `NRPA_SECS`, and reports the best-score distribution
+    /// over `NRPA_RUNS`. Sweep the destroy-size distribution with `PERTURB_KMIN` /
+    /// `PERTURB_KMAX` / `PERTURB_WINDOW`. Env: NRPA_LEVEL (repair level),
+    /// NRPA_SECS, NRPA_RUNS, SEED_LEN.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "measurement, run with --ignored --nocapture"]
+    fn measure_perturbation_run() {
+        use crate::game::io::import_save;
+        let env = |k: &str, d: u64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(d)
+        };
+        let level = env("NRPA_LEVEL", 2) as usize;
+        let secs = env("NRPA_SECS", 60);
+        let runs = env("NRPA_RUNS", 3) as usize;
+        let seed_len = env("SEED_LEN", 0) as usize; // 0 = full game (no truncation)
+        let seed_name = std::env::var("SEED_RECORD").unwrap_or_else(|_| "akiyama145".to_string());
+
+        let rec = import_save(
+            morpion_solitaire_records::RECORDS
+                .iter()
+                .find(|(n, id, _)| *n == seed_name.as_str() || *id == seed_name.as_str())
+                .unwrap_or_else(|| panic!("record {seed_name:?} not found"))
+                .2,
+        )
+        .unwrap();
+        let variant = rec.variant;
+        let mut seed = rec.history.clone();
+        if seed_len > 0 && seed_len < seed.len() {
+            seed.truncate(seed_len);
+        }
+        println!("seed={seed_name} len={} (used {})", rec.history.len(), seed.len());
+
+        let mut bests: Vec<u32> = Vec::with_capacity(runs);
+        for r in 0..runs {
+            let search = SearchState::new();
+            let s2 = search.clone();
+            let seed2 = seed.clone();
+            let h = std::thread::spawn(move || run_perturbation(s2, level, seed2, variant));
+            std::thread::sleep(Duration::from_secs(secs));
+            search.running.store(false, Ordering::Relaxed);
+            h.join().unwrap();
+            let best = search.best_score.load(Ordering::Relaxed);
+            bests.push(best);
+            println!("  run {r}: best={best}");
+        }
+        let n = bests.len() as f64;
+        let mean = bests.iter().map(|&b| b as f64).sum::<f64>() / n;
+        println!(
+            "PERTURB L{level} seed={seed_len} kmin={} kmax={} window={} {secs}s ×{runs} : mean={mean:.1} min={} max={}",
+            perturb_k_min(),
+            perturb_k_max(),
+            perturb_window(),
+            bests.iter().min().unwrap(),
+            bests.iter().max().unwrap(),
+        );
     }
 
     /// Averaged benchmark: NRPA's best-at-time is high variance, so a single run
