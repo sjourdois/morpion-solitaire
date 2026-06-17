@@ -249,6 +249,22 @@ fn nrpa_clamp_portfolio() -> bool {
     })
 }
 
+/// Self-improving warm restarts (`NRPA_SELFWARM=k`, default 0 = off): half the
+/// islands restart with a policy pre-trained `k` adapt passes toward the *current
+/// global best game* instead of a blank policy, so progress compounds (the best
+/// basin is re-explored from a biased start) while the other half stay blank for
+/// diversity. Only active on the plain cold run (no external seed). Read once.
+fn nrpa_selfwarm() -> usize {
+    use std::sync::OnceLock;
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("NRPA_SELFWARM")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 /// This island's clamp C under the portfolio: linear over [2, 5] across islands.
 fn island_clamp(i: usize, runs: usize) -> Option<f64> {
     if !nrpa_clamp_portfolio() || runs <= 1 {
@@ -765,10 +781,22 @@ fn island(
     // this scratch and undo them, always restoring it to `initial_state` — so
     // there is no per-playout clone of the ~14 KB game state.
     let mut scratch = initial_state.clone();
+    let selfwarm = nrpa_selfwarm();
     while search.running.load(Ordering::Relaxed) {
         // Fresh policy each restart (diversity), or a clone of the warm-start
-        // seed when one is supplied.
-        let mut policy = seed.cloned().unwrap_or_default();
+        // seed when one is supplied. With self-warm on, half the islands instead
+        // pre-train toward the current global best (compounding) while the rest
+        // stay blank for diversity.
+        let mut policy = if seed.is_none() && selfwarm > 0 && idx % 2 == 1 {
+            let best = search.best_sequence.read().unwrap().clone();
+            if best.len() >= 60 {
+                build_warm_policy(initial_state, &best, selfwarm)
+            } else {
+                Policy::default()
+            }
+        } else {
+            seed.cloned().unwrap_or_default()
+        };
         nrpa(level, n, &mut policy, &mut scratch, base_sym, search);
     }
 }
