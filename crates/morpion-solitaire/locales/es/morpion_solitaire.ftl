@@ -116,3 +116,4 @@ pick-mode-aim = Apuntar
 pick-mode-click = Clic
 pick-mode-aim-hint = Apunta con el cursor, rueda para cambiar de línea, clic para jugar.
 pick-mode-click-hint = Clic para fijar el punto, mueve para apuntar, clic de nuevo para jugar.
+pick-locked-hint = Apunta la línea · clic para jugar · clic derecho o Esc para cancelar

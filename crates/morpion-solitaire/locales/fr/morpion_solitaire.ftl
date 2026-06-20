@@ -116,3 +116,4 @@ pick-mode-aim = Visée
 pick-mode-click = Clic
 pick-mode-aim-hint = Visez au curseur, molette pour changer de ligne, clic pour jouer.
 pick-mode-click-hint = Cliquez pour verrouiller le point, déplacez pour viser, recliquez pour jouer.
+pick-locked-hint = Visez la ligne · clic pour jouer · clic droit ou Échap pour annuler

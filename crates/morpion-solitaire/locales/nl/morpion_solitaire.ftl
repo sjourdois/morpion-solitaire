@@ -116,3 +116,4 @@ pick-mode-aim = Richten
 pick-mode-click = Klik
 pick-mode-aim-hint = Richt met de cursor, scrollwiel wisselt de lijn, klik om te spelen.
 pick-mode-click-hint = Klik om het punt te vergrendelen, beweeg om te richten, klik nogmaals om te spelen.
+pick-locked-hint = Richt de lijn · klik om te spelen · rechtsklik of Esc om te annuleren

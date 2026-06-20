@@ -116,3 +116,4 @@ pick-mode-aim = Zielen
 pick-mode-click = Klick
 pick-mode-aim-hint = Mit dem Cursor zielen, Mausrad wechselt die Linie, Klick spielt.
 pick-mode-click-hint = Klicken zum Sperren des Punkts, bewegen zum Zielen, erneut klicken zum Spielen.
+pick-locked-hint = Linie anvisieren · Klick zum Spielen · Rechtsklick oder Esc zum Abbrechen
