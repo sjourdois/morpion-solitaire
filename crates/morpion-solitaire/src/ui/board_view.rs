@@ -1,5 +1,7 @@
 use crate::game::{board::Pos, line::Dir, moves::Move, rules::TouchMode, state::GameState};
+use crate::i18n::LANGUAGE_LOADER;
 use egui::{Color32, Pos2, Sense, Stroke, Ui, Vec2};
+use i18n_embed_fl::fl;
 
 const CELL_PAD: f32 = 1.6;
 
@@ -225,9 +227,14 @@ pub fn show(
     // locks the point so you can aim by moving the cursor, then play with a second.
     *hovered = None;
     let mut to_play: Option<Move> = None;
-    // True while a Click-mode point is locked into line-choice (drives the orange
-    // "not committed yet" dot in the preview below).
-    let mut tap_selecting = false;
+    // True when the hovered (or locked) point has several possible lines, drives
+    // the orange "ambiguous, pick a direction" dot in the preview below; a single
+    // unambiguous line stays green.
+    let mut multi_line = false;
+    // When a point is locked (Click mode) we dim the whole board at the end and
+    // redraw just this point's line options on top, so it's obvious the next move
+    // is to aim the line. Captures (locked point, its candidates, aimed index).
+    let mut lock_focus: Option<(Pos, Vec<Move>, usize)> = None;
     // Click mode persists the locked point in egui temp memory as Option<Pos>.
     let lock_id = egui::Id::new("line_pick_lock");
     let locked: Option<Pos> = if mode == InputMode::Click {
@@ -244,6 +251,9 @@ pub fn show(
         let mut cands: Vec<Move> = legal.iter().filter(|m| m.pos == pos).copied().collect();
         cands.sort_by_key(|m| (m.line.dir.delta(), m.line.origin));
         let nc = cands.len();
+        // Several collinear lines complete here → the highlighted dot reads orange
+        // on hover (not only after a Click-mode lock).
+        multi_line = nc >= 2;
 
         if cands.len() >= 2 {
             // Thinner than the real drawn lines (line_w ≈ 0.085·cell) so the
@@ -306,12 +316,12 @@ pub fn show(
                     .memory_mut(|m| m.data.insert_temp(id, (pos, sel, accum)));
                 sel.unwrap_or(aim_idx).min(nc.saturating_sub(1))
             }
-            InputMode::Click => {
-                tap_selecting = locked.is_some();
-                aim_idx
-            }
+            InputMode::Click => aim_idx,
         };
         *hovered = cands.get(active).copied();
+        if locked == Some(pos) {
+            lock_focus = Some((pos, cands.clone(), active));
+        }
 
         // Decide whether this interaction plays (or locks) a move.
         match mode {
@@ -324,7 +334,9 @@ pub fn show(
             // Click locks a point, then aim by moving the cursor and click again to
             // play; a lone candidate plays at once. Escape cancels a lock.
             InputMode::Click => {
-                if locked.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                let cancel =
+                    ui.input(|i| i.key_pressed(egui::Key::Escape)) || resp.secondary_clicked();
+                if locked.is_some() && cancel {
                     ui.ctx()
                         .memory_mut(|m| m.data.insert_temp(lock_id, None::<Pos>));
                 } else if resp.clicked() {
@@ -366,9 +378,9 @@ pub fn show(
         painter.circle_filled(
             to_screen(mv.pos),
             (cell_size * 0.22).max(4.0),
-            // Orange while a multi-line tap selection is still being chosen (not yet
-            // committed); green otherwise.
-            if tap_selecting {
+            // Orange while the point is ambiguous (several lines possible), shown
+            // on hover; green when the line is unambiguous.
+            if multi_line {
                 Color32::from_rgb(0xf0, 0x8c, 0x28)
             } else {
                 Color32::from_rgb(0x2f, 0x9e, 0x44)
@@ -422,6 +434,93 @@ pub fn show(
                 ink,
             );
         }
+    }
+
+    // Click-mode lock: dim the rest of the board so it's obvious that the point is
+    // committed and the next thing to do is aim the line (then click to play, or
+    // right-click / Esc to cancel). The locked point's options — its candidate
+    // lines and every cross/move point those lines pass through — are redrawn
+    // bright on top of the scrim.
+    if let Some((pos, cands, active)) = lock_focus {
+        let scrim = Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 140);
+        painter.rect_filled(available, 0.0, scrim);
+
+        let pt = to_screen(pos);
+        // Faint candidate lines, then the bright aimed one on top.
+        let sw = (cell_size * 0.045).max(1.0);
+        for mv in &cands {
+            let pts: Vec<Pos2> = mv
+                .line
+                .positions(state.variant.len())
+                .map(&to_screen)
+                .collect();
+            let col = dir_color(mv.line.dir, 90);
+            for w in pts.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(sw, col));
+            }
+        }
+        if let Some(mv) = cands.get(active) {
+            let pts: Vec<Pos2> = mv
+                .line
+                .positions(state.variant.len())
+                .map(&to_screen)
+                .collect();
+            let c = dir_color(mv.line.dir, 220);
+            let pw = (cell_size * 0.16).max(2.0);
+            for w in pts.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(pw, c));
+            }
+        }
+        // Redraw the points spanned by the candidate lines at full strength
+        // (same fills as the main pass: gold last move, filled move circles,
+        // ink crosses) so the line can be read against real anchors.
+        let mut seen = std::collections::HashSet::new();
+        for mv in &cands {
+            for cell in mv.line.positions(state.variant.len()) {
+                if !seen.insert(cell) {
+                    continue;
+                }
+                let fill = if last_pos == Some(cell) {
+                    GOLD
+                } else if played.contains(&cell) {
+                    played_fill
+                } else {
+                    ink
+                };
+                painter.circle(to_screen(cell), dot_r, fill, outline);
+            }
+        }
+        // The locked point reads orange ("pick a direction") with its i/N badge.
+        painter.circle_filled(
+            pt,
+            (cell_size * 0.22).max(4.0),
+            Color32::from_rgb(0xf0, 0x8c, 0x28),
+        );
+        painter.text(
+            pt + egui::vec2(dot_r + 2.0, -dot_r - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{}/{}", active + 1, cands.len()),
+            egui::FontId::proportional((cell_size * 0.26).max(9.0)),
+            ink,
+        );
+
+        // A short hint pinned to the top-centre of the board: aim, click, cancel.
+        // (The bottom-centre is taken by the picker-mode toolbar; the top corners
+        // by the view/zoom toolbars, leaving the top centre clear.)
+        let l = &*LANGUAGE_LOADER;
+        let font = egui::FontId::proportional(14.0);
+        let galley = painter.layout_no_wrap(fl!(l, "pick-locked-hint"), font, ink);
+        let text_min = egui::pos2(
+            available.center().x - galley.size().x / 2.0,
+            available.top() + 14.0,
+        );
+        let pill = egui::Rect::from_min_size(text_min, galley.size()).expand2(egui::vec2(8.0, 5.0));
+        painter.rect_filled(
+            pill,
+            6.0,
+            Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 235),
+        );
+        painter.galley(text_min, galley, ink);
     }
 
     if let Some(mv) = to_play {

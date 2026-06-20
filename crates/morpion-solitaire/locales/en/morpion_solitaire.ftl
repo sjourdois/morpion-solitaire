@@ -116,3 +116,4 @@ pick-mode-aim = Aim
 pick-mode-click = Click
 pick-mode-aim-hint = Aim with the cursor, scroll wheel to cycle lines, click to play.
 pick-mode-click-hint = Click to lock the point, move to aim the line, click again to play.
+pick-locked-hint = Aim the line · click to play · right-click or Esc to cancel

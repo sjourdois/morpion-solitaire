@@ -116,3 +116,4 @@ pick-mode-aim = Mira
 pick-mode-click = Clic
 pick-mode-aim-hint = Mira col cursore, rotellina per cambiare linea, clic per giocare.
 pick-mode-click-hint = Clic per bloccare il punto, muovi per mirare, di nuovo clic per giocare.
+pick-locked-hint = Mira la linea · clic per giocare · clic destro o Esc per annullare

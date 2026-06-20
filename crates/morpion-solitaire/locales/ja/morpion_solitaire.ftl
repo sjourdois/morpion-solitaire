@@ -116,3 +116,4 @@ pick-mode-aim = 照準
 pick-mode-click = クリック
 pick-mode-aim-hint = カーソルで照準、ホイールで線を切り替え、クリックで着手。
 pick-mode-click-hint = クリックで点を固定、移動して照準、もう一度クリックで着手。
+pick-locked-hint = 線を狙う · クリックで配置 · 右クリックまたは Esc で取消

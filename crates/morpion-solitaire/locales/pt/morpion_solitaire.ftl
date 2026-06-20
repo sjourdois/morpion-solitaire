@@ -116,3 +116,4 @@ pick-mode-aim = Mira
 pick-mode-click = Clique
 pick-mode-aim-hint = Aponte com o cursor, roda do rato para mudar de linha, clique para jogar.
 pick-mode-click-hint = Clique para fixar o ponto, mova para apontar, clique de novo para jogar.
+pick-locked-hint = Mire a linha · clique para jogar · clique direito ou Esc para cancelar
