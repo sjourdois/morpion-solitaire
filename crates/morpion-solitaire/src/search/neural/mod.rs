@@ -450,4 +450,42 @@ mod tests {
         reg.set_value("feat-adapt", plugin::OptionValue::Toggle(false));
         prior::arm(None);
     }
+
+    /// A logits()→adapt() round moves the head θ by a finite amount, exercising the
+    /// keys-reuse path (adapt reads the keys stashed by the preceding logits call). The
+    /// chosen move's contribution must push its own logit up relative to the rest.
+    #[test]
+    fn feat_adapt_updates_head_finitely() {
+        let _g = ARM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let reg = plugin::registry();
+        prior::install(prior::bundled(Variant::T5));
+        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(true));
+        feat::restart();
+
+        let st = GameState::new(Variant::T5);
+        let moves = legal_moves(&st);
+        let mut before = Vec::new();
+        feat::logits(&st, &moves, &mut before);
+        // Uniform probs, pick move 0 as chosen; adapt must reuse the stashed keys.
+        let probs = vec![1.0 / moves.len() as f64; moves.len()];
+        feat::adapt(&st, &moves, &moves[0], &probs);
+        let mut after = Vec::new();
+        feat::logits(&st, &moves, &mut after);
+
+        assert!(after.iter().all(|x| x.is_finite()), "θ·φ must stay finite after adapt");
+        assert!(
+            after.iter().zip(&before).any(|(a, b)| (a - b).abs() > 1e-9),
+            "adapt should move at least one logit"
+        );
+        // The chosen move gains relative to the mean (its φ was reinforced).
+        let mean_delta =
+            after.iter().zip(&before).map(|(a, b)| a - b).sum::<f64>() / moves.len() as f64;
+        assert!(
+            (after[0] - before[0]) >= mean_delta - 1e-9,
+            "the chosen move's logit should rise at least as much as the mean"
+        );
+
+        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(false));
+        prior::arm(None);
+    }
 }

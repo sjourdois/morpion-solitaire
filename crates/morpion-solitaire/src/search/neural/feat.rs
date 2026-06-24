@@ -57,6 +57,12 @@ struct FeatState {
     clamp: Option<f64>,
     /// L2-normalize each cached φ to unit length (default off).
     norm: bool,
+    /// Per-move keys from the last [`logits`] call, reused by the [`adapt`] that
+    /// follows it (same `moves`) to avoid recomputing `key_and_input` per move and
+    /// re-locking the armed slot. Also a reusable buffer (no per-step allocation).
+    keys: Vec<PatchKey>,
+    /// Reusable gradient scratch for [`adapt`] (avoids a per-step heap allocation).
+    grad: Vec<f64>,
 }
 
 thread_local! {
@@ -68,6 +74,8 @@ thread_local! {
         lambda: 0.0,
         clamp: None,
         norm: false,
+        keys: Vec::new(),
+        grad: Vec::new(),
     });
 }
 
@@ -151,7 +159,10 @@ pub fn logits(scratch: &GameState, moves: &[Move], out: &mut Vec<f64>) {
     let src: &dyn FeatureSource = prior.as_ref();
     let gen = GENERATION.load(Ordering::Relaxed);
 
-    let mut keys: Vec<PatchKey> = Vec::with_capacity(moves.len());
+    // Reuse this thread's keys buffer; it is stashed back at the end for the adapt()
+    // that follows (same `moves`), so adapt re-uses these keys instead of recomputing.
+    let mut keys: Vec<PatchKey> = FEAT.with(|f| std::mem::take(&mut f.borrow_mut().keys));
+    keys.clear();
     let mut miss_keys: Vec<PatchKey> = Vec::new();
     let mut miss_inputs: Vec<Vec<f32>> = Vec::new();
     FEAT.with(|f| {
@@ -177,8 +188,8 @@ pub fn logits(scratch: &GameState, moves: &[Move], out: &mut Vec<f64>) {
         // base policy, as the prior-bias path does — instead of mixing real θ·φ for
         // cached moves with a silent 0 for the misses (which would bias the softmax).
         if vs.len() != miss_inputs.len() {
-            out.clear();
             out.resize(moves.len(), 0.0);
+            FEAT.with(|f| f.borrow_mut().keys = keys); // hand the buffer back
             return;
         }
         FEAT.with(|f| {
@@ -201,38 +212,46 @@ pub fn logits(scratch: &GameState, moves: &[Move], out: &mut Vec<f64>) {
             None => 0.0,
         }));
     });
+    // Stash the keys for the following adapt() (and reuse the buffer next step).
+    FEAT.with(|f| f.borrow_mut().keys = keys);
 }
 
 /// Apply the head update θ += α·(φ_chosen − Σ_m p_m·φ_m). `probs` are the softmax
 /// probabilities the step was sampled with (in `moves` order); every φ is read from
 /// this island's cache (filled by the [`logits`] call that produced `probs`).
-pub fn adapt(scratch: &GameState, moves: &[Move], chosen: &Move, probs: &[f64]) {
+pub fn adapt(_scratch: &GameState, moves: &[Move], chosen: &Move, probs: &[f64]) {
     if moves.is_empty() {
         return;
     }
-    let guard = armed().read().unwrap();
-    let Some(prior) = guard.as_ref() else {
-        return;
-    };
-    let src: &dyn FeatureSource = prior.as_ref();
-    let (ckey, _) = src.key_and_input(scratch, chosen);
     FEAT.with(|f| {
         let mut f = f.borrow_mut();
         let h = f.theta.len();
         if h == 0 {
             return;
         }
+        // Reuse the per-move keys stashed by the preceding logits() call (same `moves`),
+        // so no key_and_input recompute and no armed-slot lock here. If the stash doesn't
+        // line up (logits() always precedes adapt() with the same moves, so this is a
+        // belt-and-braces guard), skip this θ update rather than index a wrong key.
+        if f.keys.len() != moves.len() {
+            return;
+        }
         let (alpha, lambda, clamp) = (f.alpha, f.lambda, f.clamp);
-        // grad = φ_chosen − Σ p_m φ_m
-        let mut grad = vec![0.0f64; h];
-        if let Some(phi_c) = f.phi.get(&ckey) {
-            for (g, &p) in grad.iter_mut().zip(phi_c.iter()) {
-                *g += p as f64;
+        let chosen_idx = moves.iter().position(|m| m == chosen);
+
+        // grad = φ_chosen − Σ p_m φ_m, in a reused scratch buffer.
+        let mut grad = std::mem::take(&mut f.grad);
+        grad.clear();
+        grad.resize(h, 0.0);
+        if let Some(ci) = chosen_idx {
+            if let Some(phi_c) = f.phi.get(&f.keys[ci]) {
+                for (g, &p) in grad.iter_mut().zip(phi_c.iter()) {
+                    *g += p as f64;
+                }
             }
         }
-        for (mv, &prob) in moves.iter().zip(probs) {
-            let (k, _) = src.key_and_input(scratch, mv);
-            if let Some(phi) = f.phi.get(&k) {
+        for (k, &prob) in f.keys.iter().zip(probs) {
+            if let Some(phi) = f.phi.get(k) {
                 for (g, &p) in grad.iter_mut().zip(phi.iter()) {
                     *g -= prob * p as f64;
                 }
@@ -249,6 +268,7 @@ pub fn adapt(scratch: &GameState, moves: &[Move], chosen: &Move, probs: &[f64]) 
             }
             *t = v;
         }
+        f.grad = grad; // hand the buffer back
     });
 }
 
