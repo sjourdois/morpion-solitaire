@@ -158,6 +158,16 @@ opt-feat-adapt = Feature-space NRPA
 opt-feat-adapt-hint = Adapt a head over the net's frozen features online (φ-B) instead of a fixed prior bias. Needs a prior. Experimental.
 opt-feat-alpha = Feature-space step (α_θ)
 opt-feat-alpha-hint = Head step size for feature-space NRPA. Default 0.1. Only used when feature-space is on.
+opt-feat-table = Keep policy table (φ-B)
+opt-feat-table-hint = Keep the one-hot policy table alongside θ·φ (φ-B). Off → head-only φ-A. Only with feature-space.
+opt-feat-warm = Warm-init head
+opt-feat-warm-hint = Warm-init θ₀ = scale·head, reproducing the prior at step 0. Off → cold (θ₀ = 0). Only with feature-space.
+opt-feat-lambda = Head L2 decay λ
+opt-feat-lambda-hint = L2 decay θ ← (1−λ)θ after each adapt. Default 0 = off. Only with feature-space.
+opt-feat-clamp = Head clamp C
+opt-feat-clamp-hint = Clamp |θ_j| ≤ C after each adapt. Default 0 = off. Only with feature-space.
+opt-feat-norm = Normalize φ
+opt-feat-norm-hint = L2-normalize each cached φ to unit length. Breaks warm reproduction; for cold-init sweeps. Only with feature-space.
 opt-macros = Macro-actions
 opt-macros-hint = NRPA also picks multi-move motifs mined from records (5T only). Experimental.
 opt-macro-k = Macro length (k)

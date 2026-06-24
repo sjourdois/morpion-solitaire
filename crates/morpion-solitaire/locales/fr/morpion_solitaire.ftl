@@ -158,6 +158,16 @@ opt-feat-adapt = NRPA espace-features
 opt-feat-adapt-hint = Adapte une tête sur les features gelées du réseau en ligne (φ-B) au lieu d’un biais fixe. Nécessite un prior. Expérimental.
 opt-feat-alpha = Pas espace-features (α_θ)
 opt-feat-alpha-hint = Pas de la tête pour la NRPA espace-features. Défaut 0.1. Utilisé seulement si activé.
+opt-feat-table = Garder la table de politique (φ-B)
+opt-feat-table-hint = Garder la table de politique one-hot à côté de θ·φ (φ-B). Désactivé → φ-A tête seule. Seulement avec l'espace-features.
+opt-feat-warm = Init. à chaud de la tête
+opt-feat-warm-hint = Init. à chaud θ₀ = échelle·tête, reproduit le prior à l'étape 0. Désactivé → à froid (θ₀ = 0). Seulement avec l'espace-features.
+opt-feat-lambda = Décroissance L2 λ de la tête
+opt-feat-lambda-hint = Décroissance L2 θ ← (1−λ)θ après chaque adaptation. Défaut 0 = désactivé. Seulement avec l'espace-features.
+opt-feat-clamp = Bornage C de la tête
+opt-feat-clamp-hint = Borne |θ_j| ≤ C après chaque adaptation. Défaut 0 = désactivé. Seulement avec l'espace-features.
+opt-feat-norm = Normaliser φ
+opt-feat-norm-hint = Normalise (L2) chaque φ en cache à la norme 1. Casse la reproduction à chaud ; pour les balayages init.-à-froid. Seulement avec l'espace-features.
 opt-macros = Macro-actions
 opt-macros-hint = NRPA choisit aussi des motifs multi-coups extraits des records (5T uniquement). Expérimental.
 opt-macro-k = Longueur macro (k)

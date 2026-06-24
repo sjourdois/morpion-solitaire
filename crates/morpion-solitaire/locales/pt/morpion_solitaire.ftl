@@ -158,6 +158,16 @@ opt-feat-adapt = NRPA espaço-features
 opt-feat-adapt-hint = Adapta uma cabeça sobre as features congeladas da rede online (φ-B) em vez de um viés fixo. Precisa de um prior. Experimental.
 opt-feat-alpha = Passo espaço-features (α_θ)
 opt-feat-alpha-hint = Tamanho do passo da cabeça para NRPA espaço-features. Predefinição 0.1. Só quando ativo.
+opt-feat-table = Manter tabela de política (φ-B)
+opt-feat-table-hint = Manter a tabela de política one-hot ao lado de θ·φ (φ-B). Desativado → φ-A só cabeça. Só com espaço-features.
+opt-feat-warm = Init. a quente da cabeça
+opt-feat-warm-hint = Init. a quente θ₀ = escala·cabeça, reproduz o prior no passo 0. Desativado → a frio (θ₀ = 0). Só com espaço-features.
+opt-feat-lambda = Decaimento L2 λ da cabeça
+opt-feat-lambda-hint = Decaimento L2 θ ← (1−λ)θ após cada adaptação. Predefinição 0 = desativado. Só com espaço-features.
+opt-feat-clamp = Limite C da cabeça
+opt-feat-clamp-hint = Limita |θ_j| ≤ C após cada adaptação. Predefinição 0 = desativado. Só com espaço-features.
+opt-feat-norm = Normalizar φ
+opt-feat-norm-hint = Normaliza (L2) cada φ em cache para comprimento 1. Quebra a reprodução a quente; para varrimentos a frio. Só com espaço-features.
 opt-macros = Macro-ações
 opt-macros-hint = O NRPA também escolhe motivos multi-jogada extraídos de recordes (só 5T). Experimental.
 opt-macro-k = Comprimento macro (k)

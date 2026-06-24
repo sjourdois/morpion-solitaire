@@ -17,6 +17,7 @@ pub mod dataset;
 pub mod embedded;
 pub mod feat;
 pub mod features;
+pub mod global_features;
 pub mod net;
 pub mod position;
 pub mod puct;

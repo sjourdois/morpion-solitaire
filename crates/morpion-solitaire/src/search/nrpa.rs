@@ -951,6 +951,9 @@ fn playout(
     // `neural`; no-op and unreferenced otherwise).
     #[cfg(feature = "neural")]
     let feat = crate::search::neural::feat::active();
+    // φ-A (head-only) drops the one-hot table; φ-B (default) keeps it alongside θ·φ.
+    #[cfg(feature = "neural")]
+    let feat_table = feat && crate::search::neural::feat::keep_table();
     #[cfg(feature = "neural")]
     let bias = if feat { None } else { bias };
     // Buffers reused across every step of this playout (cleared per step) so the
@@ -982,10 +985,15 @@ fn playout(
         let used_feat = if feat {
             crate::search::neural::feat::logits(scratch, &moves, &mut fbuf);
             weights.extend(moves.iter().enumerate().map(|(i, mv)| {
-                let w = policy
-                    .get(&move_code(&coder, scratch, mv, local))
-                    .copied()
-                    .unwrap_or(0.0);
+                // φ-A (head-only) uses θ·φ alone; φ-B adds the one-hot table value.
+                let w = if feat_table {
+                    policy
+                        .get(&move_code(&coder, scratch, mv, local))
+                        .copied()
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 ((w + fbuf[i]) * inv_temp).exp()
             }));
             true
@@ -1107,6 +1115,8 @@ fn adapt(
     #[cfg(feature = "neural")]
     let feat = crate::search::neural::feat::active();
     #[cfg(feature = "neural")]
+    let feat_table = feat && crate::search::neural::feat::keep_table();
+    #[cfg(feature = "neural")]
     let bias = if feat { None } else { bias };
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
@@ -1138,7 +1148,12 @@ fn adapt(
         let used_feat = if feat {
             crate::search::neural::feat::logits(scratch, &moves, &mut fbuf);
             exps.extend(codes.iter().enumerate().map(|(i, code)| {
-                let w = policy.get(code).copied().unwrap_or(0.0);
+                // φ-A (head-only) uses θ·φ alone; φ-B adds the one-hot table value.
+                let w = if feat_table {
+                    policy.get(code).copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 ((w + fbuf[i]) * inv_temp).exp()
             }));
             true
@@ -1180,15 +1195,22 @@ fn adapt(
 
         // chosen += α ; each legal -= α · P(move). Optionally clamp the touched
         // logits to ±C (stabilization). The chosen code is among `codes`, so the
-        // loop also clamps it after its own decrement.
-        *policy
-            .entry(move_code(&coder, scratch, &mv, local))
-            .or_insert(0.0) += alpha;
-        for (&code, &e_m) in codes.iter().zip(&exps) {
-            let e = policy.entry(code).or_insert(0.0);
-            *e -= alpha * (e_m / z);
-            if let Some(c) = clamp {
-                *e = e.clamp(-c, c);
+        // loop also clamps it after its own decrement. φ-A (head-only) carries no
+        // table, so its update is the θ adapt below alone — skip the table here.
+        #[cfg(feature = "neural")]
+        let update_table = !used_feat || feat_table;
+        #[cfg(not(feature = "neural"))]
+        let update_table = true;
+        if update_table {
+            *policy
+                .entry(move_code(&coder, scratch, &mv, local))
+                .or_insert(0.0) += alpha;
+            for (&code, &e_m) in codes.iter().zip(&exps) {
+                let e = policy.entry(code).or_insert(0.0);
+                *e -= alpha * (e_m / z);
+                if let Some(c) = clamp {
+                    *e = e.clamp(-c, c);
+                }
             }
         }
 
