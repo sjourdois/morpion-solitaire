@@ -6,13 +6,14 @@
 //! The CLI and GUI dispatch through the [`Registry`] and name no specific plugin.
 //!
 //! In place: the `Plugin`/`Registry`/`Method` scaffolding + core method plugins; the
-//! `CodingModifier`/`AdaptModifier`/`PerturbModifier` hooks (resolved once per search
-//! into a scalar — no per-node cost) with core modifier plugins (symmetry, clamp/α,
-//! crossover); and declarative [`OptionSpec`]s for generic CLI/GUI rendering. Still to
-//! come: the dynamic CLI + generic GUI consuming the specs, and experimental plugins.
+//! `CodingModifier`/`AdaptModifier`/`PerturbModifier` hooks (presence markers) resolved
+//! once per search into a scalar — no per-node cost; declarative [`OptionSpec`]s; and the
+//! **values map** ([`OptionValue`] per key) that is the single source of truth the CLI
+//! and GUI write and the engine reads. The dynamic CLI and generic GUI both render from
+//! the specs and push values through [`Registry::set_value`] — naming no specific plugin.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::game::{moves::Move, rules::Variant, state::GameState};
 
@@ -47,8 +48,40 @@ pub trait Method: Sync {
     fn checkpoint_kind(&self) -> Option<&'static str>;
 }
 
-/// Where plugins register their contributions: methods and modifier hooks. Option
-/// specs and further hooks are added in later phases.
+/// A tunable option's live value. The CLI/GUI write these (parsed from a flag or a
+/// widget) into the registry's values map; the engine reads them back at search start.
+/// `Serialize`/`Deserialize` let the GUI persist them across launches.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum OptionValue {
+    Toggle(bool),
+    Float(f64),
+    Int(i64),
+}
+
+impl OptionValue {
+    pub fn as_bool(self) -> Option<bool> {
+        match self {
+            OptionValue::Toggle(b) => Some(b),
+            _ => None,
+        }
+    }
+    pub fn as_f64(self) -> Option<f64> {
+        match self {
+            OptionValue::Float(f) => Some(f),
+            OptionValue::Int(i) => Some(i as f64),
+            OptionValue::Toggle(_) => None,
+        }
+    }
+    pub fn as_int(self) -> Option<i64> {
+        match self {
+            OptionValue::Int(i) => Some(i),
+            _ => None,
+        }
+    }
+}
+
+/// Where plugins register their contributions: methods, modifier hooks, option specs,
+/// and the [`values`](Registry::set_value) map seeded from those specs' defaults.
 #[derive(Default)]
 pub struct Registry {
     methods: Vec<&'static dyn Method>,
@@ -56,6 +89,9 @@ pub struct Registry {
     adapt: Option<&'static dyn AdaptModifier>,
     perturb: Option<&'static dyn PerturbModifier>,
     options: Vec<OptionSpec>,
+    /// Live option values, keyed by [`OptionSpec::key`]. Seeded with each spec's
+    /// default as the plugin registers; overwritten by the CLI/GUI before a search.
+    values: Mutex<HashMap<&'static str, OptionValue>>,
 }
 
 impl Registry {
@@ -72,6 +108,11 @@ impl Registry {
         self.perturb = Some(m);
     }
     pub fn add_option(&mut self, spec: OptionSpec) {
+        // Seed the live value with the spec's default (no lock needed during build).
+        self.values
+            .get_mut()
+            .unwrap()
+            .insert(spec.key, spec.kind.default_value());
         self.options.push(spec);
     }
     /// All option specs contributed by registered plugins (for CLI/GUI rendering).
@@ -87,130 +128,130 @@ impl Registry {
         self.methods.iter().copied().find(|m| m.id() == id)
     }
 
-    // Hooks resolved once per search into a scalar (no per-node cost). Defaults
-    // match plain NRPA when no modifier is registered.
+    // ---- the values map (single source of truth) --------------------------
+
+    /// Set an option's live value (CLI/GUI). A key with no registered spec — or a value
+    /// whose variant doesn't match the option's declared kind (e.g. a stale persisted
+    /// value after a spec change) — is a no-op, so the map can't be poisoned.
+    pub fn set_value(&self, key: &str, val: OptionValue) {
+        let ok = self.options.iter().any(|s| s.key == key && s.kind.accepts(val));
+        if ok {
+            if let Some(slot) = self.values.lock().unwrap().get_mut(key) {
+                *slot = val;
+            }
+        }
+    }
+    /// The current value for `key`, or `None` if no plugin registered that option.
+    pub fn value(&self, key: &str) -> Option<OptionValue> {
+        self.values.lock().unwrap().get(key).copied()
+    }
+    pub fn value_bool(&self, key: &str, default: bool) -> bool {
+        self.value(key).and_then(OptionValue::as_bool).unwrap_or(default)
+    }
+    pub fn value_f64(&self, key: &str, default: f64) -> f64 {
+        self.value(key).and_then(OptionValue::as_f64).unwrap_or(default)
+    }
+    pub fn value_int(&self, key: &str, default: i64) -> i64 {
+        self.value(key).and_then(OptionValue::as_int).unwrap_or(default)
+    }
+
+    // ---- hooks resolved once per search into a scalar ---------------------
+    //
+    // Each reads the values map, gated by whether the owning modifier plugin is
+    // compiled in. Defaults match plain NRPA when the modifier is absent. Read once
+    // at search start into a local — the hot loop pays nothing new.
+
     pub fn sym_on(&self) -> bool {
-        self.coding.is_none_or(|c| c.sym_on())
+        if self.coding.is_some() {
+            self.value_bool("symmetry", true)
+        } else {
+            true
+        }
     }
     pub fn clamp(&self) -> Option<f64> {
-        self.adapt.map_or(Some(3.0), |a| a.clamp())
+        if self.adapt.is_some() {
+            let c = self.value_f64("clamp", 3.0);
+            (c > 0.0).then_some(c)
+        } else {
+            Some(3.0)
+        }
     }
     pub fn alpha(&self) -> f64 {
-        self.adapt.map_or(1.0, |a| a.alpha())
+        if self.adapt.is_some() {
+            let a = self.value_f64("alpha", 1.0);
+            if a > 0.0 {
+                a
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        }
     }
     /// Perturbation crossover rate (0 = off) — read once per perturbation round.
     pub fn crossover_rate(&self) -> f64 {
-        self.perturb.map_or(0.0, |p| p.crossover_rate())
+        if self.perturb.is_some() {
+            let r = self.value_f64("crossover", 0.0);
+            if (0.0..=1.0).contains(&r) {
+                r
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+    }
+
+    /// NRPA nesting level (the whole NRPA family), clamped to the spec's range.
+    pub fn level(&self) -> usize {
+        self.value_int("level", 3).clamp(1, 6) as usize
+    }
+    /// Beam width, at least 1.
+    pub fn width(&self) -> usize {
+        self.value_int("width", 64).max(1) as usize
     }
 }
 
-// ---- modifier hooks (resolved once per search) ----------------------------
+/// Process-wide convenience: push a value into the global registry's map.
+#[allow(dead_code)] // used by the CLI/GUI
+pub fn set_option(key: &str, val: OptionValue) {
+    registry().set_value(key, val);
+}
+
+// ---- modifier hooks (presence markers) ------------------------------------
+//
+// State now lives in the registry's values map; a modifier trait marks that a plugin
+// owns a hook and is compiled into this build. The registry resolves the hook from
+// the map, gated by the slot's presence.
 
 /// Move-coding hook: symmetry-invariant (canonical D4) coding vs the identity frame.
-pub trait CodingModifier: Sync {
-    fn sym_on(&self) -> bool;
-}
+pub trait CodingModifier: Sync {}
 /// Adapt hook: the policy-update hyperparameters — logit clamp C and step α.
-pub trait AdaptModifier: Sync {
-    fn clamp(&self) -> Option<f64>;
-    fn alpha(&self) -> f64;
-}
+pub trait AdaptModifier: Sync {}
 /// Perturbation-round hook: probability a round recombines two archived games
 /// (`crossover_games`) instead of destroy/repair of one.
-pub trait PerturbModifier: Sync {
-    fn crossover_rate(&self) -> f64;
-}
+pub trait PerturbModifier: Sync {}
 
-const F64_UNSET: u64 = u64::MAX; // f64-bits sentinel ⇒ "not set ⇒ default"
-
-/// Core symmetry modifier. Owns the `--no-symmetry` state. On (default): canonical
+/// Core symmetry modifier (owns `--symmetry`/`--no-symmetry`). On (default): canonical
 /// D4 coding, all 8 Zobrist hashes maintained. Off: identity frame only (one hash),
 /// ~+16% throughput at neutral score — for cold record runs.
-struct CoreCoding {
-    off: AtomicU8, // 0 unset · 1 off · 2 on
-}
-impl CodingModifier for CoreCoding {
-    fn sym_on(&self) -> bool {
-        self.off.load(Ordering::Relaxed) != 1
-    }
-}
-static CORE_CODING: CoreCoding = CoreCoding {
-    off: AtomicU8::new(0),
-};
+struct CoreCoding;
+impl CodingModifier for CoreCoding {}
+static CORE_CODING: CoreCoding = CoreCoding;
 
-/// Core adapt modifier. Owns `--clamp`/`--alpha`. The logit clamp (Stabilized-NRPA)
+/// Core adapt modifier (owns `--clamp`/`--alpha`). The logit clamp (Stabilized-NRPA)
 /// is on by default at C=3 (tight sweet spot; 5T L4/120 s ~112 vs ~95 unclamped);
 /// `--clamp 0` disables. α default 1.0 (0.5/2.0 regressed unclamped).
-struct CoreAdapt {
-    clamp_bits: AtomicU64,
-    alpha_bits: AtomicU64,
-}
-impl AdaptModifier for CoreAdapt {
-    fn clamp(&self) -> Option<f64> {
-        let o = self.clamp_bits.load(Ordering::Relaxed);
-        if o != F64_UNSET {
-            let c = f64::from_bits(o);
-            return if c > 0.0 { Some(c) } else { None };
-        }
-        Some(3.0)
-    }
-    fn alpha(&self) -> f64 {
-        let o = self.alpha_bits.load(Ordering::Relaxed);
-        if o != F64_UNSET {
-            let a = f64::from_bits(o);
-            if a > 0.0 {
-                return a;
-            }
-        }
-        1.0
-    }
-}
-static CORE_ADAPT: CoreAdapt = CoreAdapt {
-    clamp_bits: AtomicU64::new(F64_UNSET),
-    alpha_bits: AtomicU64::new(F64_UNSET),
-};
+struct CoreAdapt;
+impl AdaptModifier for CoreAdapt {}
+static CORE_ADAPT: CoreAdapt = CoreAdapt;
 
-/// CLI/GUI setters (no env vars). Set before a search launches; every island reads
-/// the modifier via the registry.
-#[allow(dead_code)] // used by the CLI/GUI
-pub fn set_symmetry(on: bool) {
-    CORE_CODING.off.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-}
-#[allow(dead_code)]
-pub fn set_clamp(c: f64) {
-    CORE_ADAPT.clamp_bits.store(c.to_bits(), Ordering::Relaxed);
-}
-#[allow(dead_code)]
-pub fn set_alpha(a: f64) {
-    CORE_ADAPT.alpha_bits.store(a.to_bits(), Ordering::Relaxed);
-}
-
-/// Core crossover modifier. Owns the `--crossover` rate (0 = off). Genetic
-/// recombination of archived games can reach combinations a single-game
-/// destroy/repair can't (the only perturbation lever with a positive signal).
-struct CoreCrossover {
-    rate_bits: AtomicU64,
-}
-impl PerturbModifier for CoreCrossover {
-    fn crossover_rate(&self) -> f64 {
-        let o = self.rate_bits.load(Ordering::Relaxed);
-        if o != F64_UNSET {
-            let r = f64::from_bits(o);
-            if (0.0..=1.0).contains(&r) {
-                return r;
-            }
-        }
-        0.0
-    }
-}
-static CORE_CROSSOVER: CoreCrossover = CoreCrossover {
-    rate_bits: AtomicU64::new(F64_UNSET),
-};
-
-#[allow(dead_code)]
-pub fn set_crossover(rate: f64) {
-    CORE_CROSSOVER.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
-}
+/// Core crossover modifier (owns `--crossover`, 0 = off). Genetic recombination of
+/// archived games can reach combinations a single-game destroy/repair can't (the only
+/// perturbation lever with a positive signal).
+struct CoreCrossover;
+impl PerturbModifier for CoreCrossover {}
+static CORE_CROSSOVER: CoreCrossover = CoreCrossover;
 
 // ---- declarative options --------------------------------------------------
 
@@ -233,6 +274,27 @@ pub enum OptionKind {
     },
 }
 
+impl OptionKind {
+    /// The spec's default as a live [`OptionValue`] (used to seed the values map).
+    fn default_value(self) -> OptionValue {
+        match self {
+            OptionKind::Toggle { default } => OptionValue::Toggle(default),
+            OptionKind::Float { default, .. } => OptionValue::Float(default),
+            OptionKind::Int { default, .. } => OptionValue::Int(default),
+        }
+    }
+    /// Whether `val`'s variant matches this kind (a Float kind accepts Int too, since an
+    /// integer is a valid float value).
+    fn accepts(self, val: OptionValue) -> bool {
+        matches!(
+            (self, val),
+            (OptionKind::Toggle { .. }, OptionValue::Toggle(_))
+                | (OptionKind::Float { .. }, OptionValue::Float(_) | OptionValue::Int(_))
+                | (OptionKind::Int { .. }, OptionValue::Int(_))
+        )
+    }
+}
+
 /// Which methods an option applies to.
 #[derive(Clone, Copy, Debug)]
 pub enum Scope {
@@ -242,15 +304,44 @@ pub enum Scope {
     Methods(&'static [&'static str]),
 }
 
+impl Scope {
+    /// Whether this option is relevant to the method with id `method_id`. The NRPA
+    /// family is nrpa + perturbation (perturbation drives inner NRPA searches).
+    pub fn applies_to(self, method_id: &str) -> bool {
+        match self {
+            Scope::NrpaFamily => matches!(method_id, "nrpa" | "perturbation"),
+            Scope::Methods(ids) => ids.contains(&method_id),
+        }
+    }
+}
+
 /// A declarative description of a tunable option. The CLI and GUI render from
 /// these (a plugin contributes the specs for the levers it owns).
 #[derive(Clone, Copy, Debug)]
 pub struct OptionSpec {
     pub key: &'static str,
+    /// GUI label (fluent i18n key).
     pub label_key: &'static str,
+    /// GUI tooltip (fluent i18n key).
     pub help_key: &'static str,
+    /// CLI help text. English — the CLI is the project's English-only surface, so its
+    /// `--help` carries the canonical English description while the GUI translates via
+    /// `help_key`.
+    pub help: &'static str,
     pub kind: OptionKind,
     pub scope: Scope,
+}
+
+impl OptionSpec {
+    /// The clap flag name for this option. A toggle defaulting *on* becomes a
+    /// `--no-<key>` opt-out (preserving e.g. `--no-symmetry`); everything else is
+    /// `--<key>`.
+    pub fn cli_flag(&self) -> String {
+        match self.kind {
+            OptionKind::Toggle { default: true } => format!("no-{}", self.key),
+            _ => self.key.to_owned(),
+        }
+    }
 }
 
 /// A plugin: a unit of contribution with dependencies. The core is itself plugins.
@@ -311,7 +402,13 @@ impl Method for Nrpa {
     }
 }
 
+// Perturbation drives time-bounded inner NRPA searches via OS threads
+// (`nrpa::run_perturbation`), which is native-only — so the whole method plugin is
+// gated off wasm. The crossover modifier depends on it, so on wasm the dependency
+// resolver drops crossover too (a nice end-to-end check of the dep mechanism).
+#[cfg(not(target_arch = "wasm32"))]
 struct Perturbation;
+#[cfg(not(target_arch = "wasm32"))]
 impl Method for Perturbation {
     fn id(&self) -> &'static str {
         "perturbation"
@@ -327,7 +424,7 @@ impl Method for Perturbation {
             ..
         } = ctx;
         // The crossover rate is a PerturbModifier resolved from the registry inside
-        // run_perturbation — set via `set_crossover` before launching.
+        // run_perturbation — set via the values map before launching.
         std::thread::spawn(move || nrpa::run_perturbation(search, level, seed_history, variant));
     }
     fn method_desc(&self, ctx: &StartCtx) -> String {
@@ -379,6 +476,7 @@ impl Method for BeamMethod {
 }
 
 static NRPA: Nrpa = Nrpa;
+#[cfg(not(target_arch = "wasm32"))]
 static PERTURBATION: Perturbation = Perturbation;
 static SYSTEMATIC: Systematic = Systematic;
 static BEAM: BeamMethod = BeamMethod;
@@ -398,6 +496,7 @@ macro_rules! core_method_plugin {
         }
     };
 }
+#[cfg(not(target_arch = "wasm32"))]
 core_method_plugin!(PerturbationPlugin, "perturbation", &PERTURBATION);
 core_method_plugin!(SystematicPlugin, "systematic", &SYSTEMATIC);
 
@@ -413,6 +512,8 @@ impl Plugin for NrpaPlugin {
             key: "level",
             label_key: "opt-level",
             help_key: "opt-level-hint",
+            help: "NRPA nesting level (recursion depth). 3 is the fast default; 4+ \
+                   searches more deeply but only pays off over long runs.",
             kind: OptionKind::Int {
                 default: 3,
                 min: 1,
@@ -434,6 +535,7 @@ impl Plugin for BeamPlugin {
             key: "width",
             label_key: "opt-width",
             help_key: "opt-width-hint",
+            help: "Beam width (kept candidates per depth).",
             kind: OptionKind::Int {
                 default: 64,
                 min: 1,
@@ -445,6 +547,7 @@ impl Plugin for BeamPlugin {
 }
 
 static NRPA_PLUGIN: NrpaPlugin = NrpaPlugin;
+#[cfg(not(target_arch = "wasm32"))]
 static PERTURBATION_PLUGIN: PerturbationPlugin = PerturbationPlugin;
 static SYSTEMATIC_PLUGIN: SystematicPlugin = SystematicPlugin;
 static BEAM_PLUGIN: BeamPlugin = BeamPlugin;
@@ -461,6 +564,9 @@ impl Plugin for SymmetryPlugin {
             key: "symmetry",
             label_key: "opt-symmetry",
             help_key: "opt-symmetry-hint",
+            help: "Drop symmetry-invariant move coding (identity frame only): ~+16% \
+                   throughput at neutral score — recommended for cold record runs \
+                   without warm-start. (The flag is `--no-symmetry`.)",
             kind: OptionKind::Toggle { default: true },
             scope: Scope::NrpaFamily,
         });
@@ -477,6 +583,8 @@ impl Plugin for AdaptPlugin {
             key: "clamp",
             label_key: "opt-clamp",
             help_key: "opt-clamp-hint",
+            help: "Stabilized-NRPA logit clamp C (default 3; 0 disables clamping). The \
+                   tight sweet spot for record hunting; only re-tune for experiments.",
             kind: OptionKind::Float {
                 default: 3.0,
                 min: 0.0,
@@ -489,6 +597,7 @@ impl Plugin for AdaptPlugin {
             key: "alpha",
             label_key: "opt-alpha",
             help_key: "opt-alpha-hint",
+            help: "Policy adaptation step size α (default 1.0).",
             kind: OptionKind::Float {
                 default: 1.0,
                 min: 0.1,
@@ -518,6 +627,8 @@ impl Plugin for CrossoverPlugin {
             key: "crossover",
             label_key: "opt-crossover",
             help_key: "opt-crossover-hint",
+            help: "Perturbation genetic-crossover rate (0 = off). Only used by \
+                   `--algo perturbation`.",
             kind: OptionKind::Float {
                 default: 0.0,
                 min: 0.0,
@@ -536,13 +647,17 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
     #[allow(unused_mut)]
     let mut v: Vec<&'static dyn Plugin> = vec![
         &NRPA_PLUGIN,
-        &PERTURBATION_PLUGIN,
         &SYSTEMATIC_PLUGIN,
         &BEAM_PLUGIN,
         &SYMMETRY_PLUGIN,
         &ADAPT_PLUGIN,
+        // Crossover declares a dependency on "perturbation"; on wasm (where perturbation
+        // is absent) the resolver drops it automatically.
         &CROSSOVER_PLUGIN,
     ];
+    // Perturbation is native-only (OS threads); on wasm it isn't compiled in.
+    #[cfg(not(target_arch = "wasm32"))]
+    v.push(&PERTURBATION_PLUGIN);
     // e.g. #[cfg(feature = "neural")] v.push(&NEURAL_PLUGIN); — later phases.
     v
 }
@@ -619,5 +734,35 @@ mod tests {
         assert_eq!(reg.alpha(), 1.0);
         assert!(reg.sym_on());
         assert_eq!(reg.crossover_rate(), 0.0);
+        assert_eq!(reg.level(), 3);
+        assert_eq!(reg.width(), 64);
+    }
+
+    #[test]
+    fn scope_membership() {
+        // NRPA-family options reach nrpa + perturbation; method-scoped ones only their
+        // method.
+        assert!(Scope::NrpaFamily.applies_to("nrpa"));
+        assert!(Scope::NrpaFamily.applies_to("perturbation"));
+        assert!(!Scope::NrpaFamily.applies_to("beam"));
+        assert!(Scope::Methods(&["beam"]).applies_to("beam"));
+        assert!(!Scope::Methods(&["beam"]).applies_to("nrpa"));
+    }
+
+    #[test]
+    fn set_value_round_trips_through_hooks() {
+        // Writing the map changes what the hooks resolve; restore defaults after so
+        // the process-global registry isn't left perturbed for other tests.
+        let reg = registry();
+        reg.set_value("clamp", OptionValue::Float(0.0));
+        assert_eq!(reg.clamp(), None, "clamp 0 disables clamping");
+        reg.set_value("symmetry", OptionValue::Toggle(false));
+        assert!(!reg.sym_on());
+        reg.set_value("crossover", OptionValue::Float(0.25));
+        assert_eq!(reg.crossover_rate(), 0.25);
+        // restore
+        reg.set_value("clamp", OptionValue::Float(3.0));
+        reg.set_value("symmetry", OptionValue::Toggle(true));
+        reg.set_value("crossover", OptionValue::Float(0.0));
     }
 }

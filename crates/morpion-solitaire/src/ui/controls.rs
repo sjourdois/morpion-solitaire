@@ -100,7 +100,6 @@ pub struct ControlsInput {
     pub algo: SearchAlgo,
     /// Whether a search result preview is on the board (read-only until loaded).
     pub showing_preview: bool,
-    pub nrpa_level: usize,
     /// Where the next search will begin.
     pub start_point: StartPoint,
     /// Whether a non-empty game is loaded (enables Seeded/Continue and lets
@@ -137,7 +136,6 @@ pub struct ControlsInput {
 pub struct ControlsOutput {
     pub new_game: Option<Variant>,
     pub set_algo: Option<SearchAlgo>,
-    pub set_nrpa_level: Option<usize>,
     pub set_start_point: Option<StartPoint>,
     /// Index into `record_names` of a record the user chose to load.
     pub load_record: Option<usize>,
@@ -373,24 +371,10 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
                     }
                 });
         });
-        // NRPA nesting level (fast vs deep trade-off; perturbation uses NRPA inside).
-        if matches!(input.algo, SearchAlgo::Nrpa | SearchAlgo::Perturbation) {
-            ui.add_space(6.0);
-            ui.label(RichText::new(fl!(l, "nrpa-level-label")).strong());
-            ui.add_enabled_ui(!input.search_running, |ui| {
-                ui.horizontal(|ui| {
-                    for level in [3usize, 4, 5] {
-                        if ui
-                            .selectable_label(input.nrpa_level == level, level.to_string())
-                            .clicked()
-                        {
-                            out.set_nrpa_level = Some(level);
-                        }
-                    }
-                });
-            });
-            ui.label(RichText::new(fl!(l, "nrpa-level-hint")).weak().small());
-        }
+        // Engine-tuning options, rendered generically from the plugin registry: a new
+        // plugin option appears here with no edit to this file, and only the options in
+        // scope for the chosen algorithm show (docs/plugin-framework.md).
+        render_search_options(ui, input.algo, !input.search_running);
 
         // Starting point — the valid set depends on the algorithm. Perturbation
         // always perturbs the loaded game, so it shows a note instead of a choice.
@@ -552,6 +536,79 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
     }
 
     out
+}
+
+/// The plugin-registry method id for a GUI algorithm (for option-scope filtering).
+fn algo_id(a: SearchAlgo) -> &'static str {
+    match a {
+        SearchAlgo::Nrpa => "nrpa",
+        SearchAlgo::Beam => "beam",
+        SearchAlgo::Systematic => "systematic",
+        SearchAlgo::Perturbation => "perturbation",
+    }
+}
+
+/// Render the engine-tuning options in scope for `algo`, driven entirely by the plugin
+/// registry's [`OptionSpec`](crate::search::plugin::OptionSpec)s. Each widget reads and
+/// writes the registry's values map directly (the single source of truth the engine
+/// reads at search start), so adding a plugin option needs no change here. Labels and
+/// tooltips resolve at runtime via [`crate::i18n::tr`].
+fn render_search_options(ui: &mut Ui, algo: SearchAlgo, enabled: bool) {
+    use crate::i18n::tr;
+    use crate::search::plugin::{registry, OptionKind, OptionValue};
+    let reg = registry();
+    let id = algo_id(algo);
+    let mut shown = false;
+    for spec in reg.options() {
+        if !spec.scope.applies_to(id) {
+            continue;
+        }
+        if !shown {
+            ui.add_space(6.0);
+            shown = true;
+        }
+        let label = tr(spec.label_key);
+        let hint = tr(spec.help_key);
+        ui.add_enabled_ui(enabled, |ui| match spec.kind {
+            OptionKind::Toggle { default } => {
+                let mut v = reg.value_bool(spec.key, default);
+                if ui.checkbox(&mut v, &label).on_hover_text(&hint).changed() {
+                    reg.set_value(spec.key, OptionValue::Toggle(v));
+                }
+            }
+            OptionKind::Float {
+                default,
+                min,
+                max,
+                step,
+            } => {
+                ui.label(RichText::new(&label).strong());
+                let mut v = reg.value_f64(spec.key, default);
+                if ui
+                    .add(egui::Slider::new(&mut v, min..=max).step_by(step))
+                    .on_hover_text(&hint)
+                    .changed()
+                {
+                    reg.set_value(spec.key, OptionValue::Float(v));
+                }
+            }
+            OptionKind::Int { default, min, max } => {
+                ui.label(RichText::new(&label).strong());
+                let mut v = reg.value_int(spec.key, default);
+                // A wide range (beam width) is unusable on a linear slider; switch to a
+                // logarithmic one past a threshold.
+                let slider = egui::Slider::new(&mut v, min..=max);
+                let slider = if max - min > 1000 {
+                    slider.logarithmic(true)
+                } else {
+                    slider
+                };
+                if ui.add(slider).on_hover_text(&hint).changed() {
+                    reg.set_value(spec.key, OptionValue::Int(v));
+                }
+            }
+        });
+    }
 }
 
 fn format_rate(r: f64) -> String {

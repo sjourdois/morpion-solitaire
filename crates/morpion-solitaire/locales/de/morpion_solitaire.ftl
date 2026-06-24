@@ -117,3 +117,17 @@ pick-mode-click = Klick
 pick-mode-aim-hint = Mit dem Cursor zielen, Mausrad wechselt die Linie, Klick spielt.
 pick-mode-click-hint = Klicken zum Sperren des Punkts, bewegen zum Zielen, erneut klicken zum Spielen.
 pick-locked-hint = Linie anvisieren · Klick zum Spielen · Rechtsklick oder Esc zum Abbrechen
+
+# Engine-Feinabstimmung (generisch aus dem Plugin-Registry gerendert)
+opt-level = NRPA-Stufe
+opt-level-hint = Verschachtelungstiefe. 3 = schnell (~99 in einer Minute); 4+ sucht tiefer, lohnt sich aber erst über lange Läufe.
+opt-width = Strahlbreite
+opt-width-hint = Pro Tiefe behaltene Kandidaten. Breiter = gründlicher, aber langsamer.
+opt-symmetry = Symmetrie-Kodierung
+opt-symmetry-hint = Kanonische D4-Zugkodierung. Aus (nur Identitätsrahmen) für ~+16 % Durchsatz bei neutralem Score — gut für kalte Rekordläufe.
+opt-clamp = Logit-Begrenzung (C)
+opt-clamp-hint = Stabilized-NRPA-Begrenzung. 3 ist der Idealwert für die Rekordsuche; 0 schaltet sie ab.
+opt-alpha = Schrittweite (α)
+opt-alpha-hint = Anpassungsschritt der Strategie. Standard 1.0; nur für Experimente ändern.
+opt-crossover = Crossover-Rate
+opt-crossover-hint = Nur Perturbation: Wahrscheinlichkeit, dass eine Runde zwei archivierte Spiele rekombiniert statt zu zerstören/reparieren. 0 = aus.
