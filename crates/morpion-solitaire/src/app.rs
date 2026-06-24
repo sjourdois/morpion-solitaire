@@ -57,6 +57,27 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Background state for the neural prior (feature `neural`): the training thread
+/// writes `status`/`prior`, the UI thread reads them each frame.
+#[cfg(feature = "neural")]
+#[derive(Default)]
+struct NeuralShared {
+    status: NeuralStatus,
+    prior: Option<Arc<crate::search::neural::net::NeuralPrior>>,
+}
+
+/// Lifecycle of the selected prior. `Idle` = nothing built yet for the current source.
+#[cfg(feature = "neural")]
+#[derive(Default, Clone)]
+enum NeuralStatus {
+    #[default]
+    Idle,
+    /// Building/training, with a progress line (empty for a plain corpus train).
+    Training(String),
+    Ready,
+    Error(String),
+}
+
 pub struct MorpionApp {
     state: GameState,
     legal: Vec<Move>,
@@ -154,6 +175,18 @@ pub struct MorpionApp {
     exhausted_notice: Option<(u32, Duration)>,
     /// Edge guard so the exhaustion dialog fires once per search.
     exhausted_seen: bool,
+    /// Selected neural-prior source (feature `neural`).
+    #[cfg(feature = "neural")]
+    prior_source: controls::PriorSource,
+    /// Shared state for the background prior build/training (feature `neural`).
+    #[cfg(feature = "neural")]
+    neural: Arc<std::sync::Mutex<NeuralShared>>,
+    /// Cancel flag for an in-progress tabula-rasa training (feature `neural`).
+    #[cfg(feature = "neural")]
+    neural_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// A search deferred until the prior finishes building (feature `neural`).
+    #[cfg(feature = "neural")]
+    pending_search: bool,
 }
 
 /// The editorial (free, human-curated) metadata fields the user can edit. Held as
@@ -232,6 +265,10 @@ impl MorpionApp {
         let export_format = get("export_format")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(ExportFormat::Msr);
+        #[cfg(feature = "neural")]
+        let prior_source = get("prior_source")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(controls::PriorSource::None);
         // Restore persisted engine-tuning option values into the plugin registry (the
         // GUI's source of truth for them). `set_value` rejects any value whose variant
         // no longer matches its spec, so a stale entry after a spec change is ignored.
@@ -310,6 +347,14 @@ impl MorpionApp {
             author_asked: false,
             exhausted_notice: None,
             exhausted_seen: false,
+            #[cfg(feature = "neural")]
+            prior_source,
+            #[cfg(feature = "neural")]
+            neural: Arc::new(std::sync::Mutex::new(NeuralShared::default())),
+            #[cfg(feature = "neural")]
+            neural_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(feature = "neural")]
+            pending_search: false,
         }
     }
 
@@ -1197,6 +1242,20 @@ impl MorpionApp {
 
     fn start_search(&mut self) {
         self.stop_search();
+        // Neural prior gating (feature `neural`): arm the selected prior, or defer the
+        // search until a background build/train finishes (then it auto-starts).
+        #[cfg(feature = "neural")]
+        {
+            if self.algo_uses_prior() {
+                if !self.ensure_prior_armed() {
+                    self.pending_search = true;
+                    return;
+                }
+            } else {
+                crate::search::neural::prior::arm(None);
+            }
+            self.pending_search = false;
+        }
         self.alarm_fired = false;
         self.alarm_active.store(false, Ordering::Relaxed);
         self.search_preview = None;
@@ -1390,6 +1449,169 @@ impl MorpionApp {
     }
 }
 
+#[cfg(feature = "neural")]
+impl MorpionApp {
+    /// Whether the chosen algorithm consumes the neural prior (the NRPA family).
+    fn algo_uses_prior(&self) -> bool {
+        matches!(self.algo, SearchAlgo::Nrpa | SearchAlgo::Perturbation)
+    }
+
+    /// A localized status line for the prior panel (empty when idle).
+    fn prior_status_text(&self) -> String {
+        let l = &*LANGUAGE_LOADER;
+        match &self.neural.lock().unwrap().status {
+            NeuralStatus::Idle => String::new(),
+            NeuralStatus::Training(p) if p.is_empty() => fl!(l, "prior-status-training"),
+            NeuralStatus::Training(p) => format!("{} {p}", fl!(l, "prior-status-training")),
+            NeuralStatus::Ready => fl!(l, "prior-status-ready"),
+            NeuralStatus::Error(e) => fl!(l, "prior-status-error", error = e.as_str()),
+        }
+    }
+
+    fn prior_busy(&self) -> bool {
+        matches!(self.neural.lock().unwrap().status, NeuralStatus::Training(_))
+    }
+
+    /// Switch the prior source: stop any running training, reset shared state, disarm.
+    fn set_prior_source(&mut self, src: controls::PriorSource) {
+        self.prior_source = src;
+        self.neural_cancel.store(true, Ordering::Relaxed);
+        *self.neural.lock().unwrap() = NeuralShared::default();
+        crate::search::neural::prior::arm(None);
+    }
+
+    /// Ensure a prior is built and armed for the current source. Returns true when the
+    /// search may proceed now; false when a background build was started (the caller
+    /// sets `pending_search`; the search auto-starts when it finishes).
+    fn ensure_prior_armed(&mut self) -> bool {
+        use crate::search::neural::prior;
+        use controls::PriorSource as P;
+        match self.prior_source {
+            P::None => {
+                prior::arm(None);
+                true
+            }
+            P::Bundled => {
+                let mut sh = self.neural.lock().unwrap();
+                if sh.prior.is_none() {
+                    match prior::bundled(self.selected_variant) {
+                        Some(p) => {
+                            sh.prior = Some(Arc::new(p));
+                            sh.status = NeuralStatus::Ready;
+                        }
+                        None => {
+                            sh.status = NeuralStatus::Error("no bundled prior".to_owned());
+                            return false;
+                        }
+                    }
+                }
+                prior::arm(sh.prior.clone());
+                true
+            }
+            P::File => {
+                let sh = self.neural.lock().unwrap();
+                match &sh.prior {
+                    Some(p) => {
+                        prior::arm(Some(p.clone()));
+                        true
+                    }
+                    None => false, // the user must Load… a file first
+                }
+            }
+            P::Corpus | P::TabulaRasa => {
+                let ready = {
+                    let sh = self.neural.lock().unwrap();
+                    matches!(sh.status, NeuralStatus::Ready) && sh.prior.is_some()
+                };
+                if ready {
+                    let p = self.neural.lock().unwrap().prior.clone();
+                    prior::arm(p);
+                    return true;
+                }
+                if !self.prior_busy() {
+                    self.spawn_prior_training();
+                }
+                false
+            }
+        }
+    }
+
+    /// Spawn the background training thread for the Corpus / Tabula-rasa sources.
+    fn spawn_prior_training(&mut self) {
+        use crate::search::neural::net::NeuralPrior;
+        use crate::search::neural::prior;
+        let variant = self.selected_variant;
+        let source = self.prior_source;
+        let shared = self.neural.clone();
+        self.neural_cancel.store(false, Ordering::Relaxed);
+        let cancel = self.neural_cancel.clone();
+        shared.lock().unwrap().status = NeuralStatus::Training(String::new());
+        std::thread::spawn(move || {
+            let result: candle_core::Result<Arc<NeuralPrior>> = match source {
+                controls::PriorSource::Corpus => {
+                    prior::train_on_corpus(variant, 40, 1e-3).map(Arc::new)
+                }
+                controls::PriorSource::TabulaRasa => {
+                    use crate::search::neural::tabula_rasa::{train, TabulaRasaConfig};
+                    // A GUI-scale run (a few minutes); a serious run belongs on the CLI.
+                    let cfg = TabulaRasaConfig {
+                        variant,
+                        rounds: 6,
+                        secs_per_round: 15.0,
+                        islands: 2,
+                        ..TabulaRasaConfig::default()
+                    };
+                    let sh = shared.clone();
+                    train(&cfg, &cancel, |r| {
+                        sh.lock().unwrap().status = NeuralStatus::Training(format!(
+                            "r{} best {} ×{}",
+                            r.round, r.best_ever, r.elite_size
+                        ));
+                    })
+                    .map(|(p, _corpus)| p)
+                }
+                _ => unreachable!("only Corpus/TabulaRasa train"),
+            };
+            let mut sh = shared.lock().unwrap();
+            match result {
+                Ok(p) => {
+                    sh.prior = Some(p);
+                    sh.status = NeuralStatus::Ready;
+                }
+                Err(e) => sh.status = NeuralStatus::Error(e.to_string()),
+            }
+        });
+    }
+
+    /// Load a prior from a file the user picks (the `File` source). Native dialog.
+    fn load_prior_from_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("safetensors", &["safetensors"])
+            .pick_file()
+        else {
+            return;
+        };
+        let mut sh = self.neural.lock().unwrap();
+        match crate::search::neural::prior::load(&path.to_string_lossy()) {
+            Ok(p) => {
+                sh.prior = Some(Arc::new(p));
+                sh.status = NeuralStatus::Ready;
+            }
+            Err(e) => sh.status = NeuralStatus::Error(e.to_string()),
+        }
+    }
+
+    /// Cancel an in-progress training and drop any deferred search.
+    fn cancel_prior_training(&mut self) {
+        self.neural_cancel.store(true, Ordering::Relaxed);
+        self.pending_search = false;
+        let mut sh = self.neural.lock().unwrap();
+        if matches!(sh.status, NeuralStatus::Training(_)) {
+            sh.status = NeuralStatus::Idle;
+        }
+    }
+}
+
 impl eframe::App for MorpionApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let mut set = |k: &str, v: String| storage.set_string(k, v);
@@ -1424,6 +1646,10 @@ impl eframe::App for MorpionApp {
         if let Ok(s) = serde_json::to_string(&self.export_format) {
             set("export_format", s);
         }
+        #[cfg(feature = "neural")]
+        if let Ok(s) = serde_json::to_string(&self.prior_source) {
+            set("prior_source", s);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1446,6 +1672,25 @@ impl eframe::App for MorpionApp {
         // Repaint every frame while search is running so stats stay live.
         if self.search_running() {
             ctx.request_repaint();
+        }
+        // While a prior builds in the background, keep polling so the deferred search
+        // launches as soon as it's ready and the status line stays live (feature `neural`).
+        #[cfg(feature = "neural")]
+        if self.pending_search || self.prior_busy() {
+            ctx.request_repaint();
+            if self.pending_search {
+                // Bind the cloned status first so the MutexGuard is dropped before
+                // `start_search` (which needs `&mut self`) runs.
+                let status = self.neural.lock().unwrap().status.clone();
+                match status {
+                    NeuralStatus::Ready => {
+                        self.pending_search = false;
+                        self.start_search();
+                    }
+                    NeuralStatus::Error(_) => self.pending_search = false,
+                    _ => {}
+                }
+            }
         }
 
         let mut played_move: Option<Move> = None;
@@ -1694,6 +1939,12 @@ impl eframe::App for MorpionApp {
                             .unwrap_or_default(),
                         checkpoint_supported,
                         resume,
+                        #[cfg(feature = "neural")]
+                        prior_source: self.prior_source,
+                        #[cfg(feature = "neural")]
+                        prior_status: self.prior_status_text(),
+                        #[cfg(feature = "neural")]
+                        prior_busy: self.prior_busy(),
                     },
                 );
                 if let Some(v) = out.new_game {
@@ -1708,6 +1959,18 @@ impl eframe::App for MorpionApp {
                 }
                 if let Some(sp) = out.set_start_point {
                     self.start_point = sp;
+                }
+                #[cfg(feature = "neural")]
+                if let Some(src) = out.set_prior_source {
+                    self.set_prior_source(src);
+                }
+                #[cfg(feature = "neural")]
+                if out.load_prior_file {
+                    self.load_prior_from_file();
+                }
+                #[cfg(feature = "neural")]
+                if out.cancel_training {
+                    self.cancel_prior_training();
                 }
                 if let Some(j) = out.load_record {
                     if let Some((_, _, msr)) = record_idx.get(j).and_then(|&i| RECORDS.get(i)) {

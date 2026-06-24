@@ -133,3 +133,21 @@ opt-crossover = Taxa de cruzamento
 opt-crossover-hint = Apenas perturbação: probabilidade de uma ronda recombinar dois jogos arquivados em vez de destruir/reparar. 0 = desligado.
 opt-neural-scale = Força do prior neuronal
 opt-neural-scale-hint = Escala β do prior neuronal de jogadas; ótimo ≈ 4. Só se aplica com um prior carregado.
+
+# Painel do prior neuronal (funcionalidade `neural`)
+prior-section = Prior neuronal
+prior-none = Nenhum
+prior-bundled = Incluído
+prior-corpus = Corpus
+prior-tabula-rasa = Tabula rasa
+prior-file = Ficheiro
+prior-none-hint = NRPA simples — sem prior de jogadas aprendido.
+prior-bundled-hint = O prior «from scratch» incluído — instantâneo, sem treino nem recordes humanos.
+prior-corpus-hint = Treina um prior nos recordes humanos incluídos (~40 s em CPU).
+prior-tabula-rasa-hint = Treina de raiz por Expert Iteration — sem recordes. Aqui minutos; uma execução a sério faz-se na CLI.
+prior-file-hint = Carrega um prior guardado antes (safetensors).
+btn-load-prior = Carregar…
+btn-cancel-training = Cancelar treino
+prior-status-training = A treinar o prior…
+prior-status-ready = Prior pronto ✓
+prior-status-error = Erro: { $error }

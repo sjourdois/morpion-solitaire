@@ -133,3 +133,21 @@ opt-crossover = 交叉率
 opt-crossover-hint = 摂動のみ：1 ラウンドが破壊・修復の代わりに 2 つの保存済みゲームを組み換える確率。0 = 無効。
 opt-neural-scale = ニューラル事前分布の強さ
 opt-neural-scale-hint = ニューラル手事前分布の β スケール。最適値は約 4。事前分布を読み込んだ場合のみ有効。
+
+# ニューラル事前分布パネル（機能 `neural`）
+prior-section = ニューラル事前分布
+prior-none = なし
+prior-bundled = 同梱
+prior-corpus = コーパス
+prior-tabula-rasa = タブラ・ラサ
+prior-file = ファイル
+prior-none-hint = 素の NRPA — 学習済みの手事前分布なし。
+prior-bundled-hint = 同梱の「ゼロから」事前分布 — 即時、学習不要、人間の記録不要。
+prior-corpus-hint = 同梱の人間の記録で事前分布を学習（CPU で約 40 秒）。
+prior-tabula-rasa-hint = Expert Iteration でゼロから学習 — 記録なし。ここでは数分；本格的な実行は CLI で。
+prior-file-hint = 以前保存した事前分布を読み込む（safetensors）。
+btn-load-prior = 読み込み…
+btn-cancel-training = 学習を中止
+prior-status-training = 事前分布を学習中…
+prior-status-ready = 事前分布の準備完了 ✓
+prior-status-error = エラー: { $error }
