@@ -344,9 +344,9 @@ fn build_command() -> clap::Command {
             let arg = Arg::new(spec.key).long(flag).help(spec.help);
             let arg = match spec.kind {
                 OptionKind::Toggle { .. } => arg.action(ArgAction::SetTrue),
-                OptionKind::Float { .. } => arg
-                    .value_name("F")
-                    .value_parser(clap::value_parser!(f64)),
+                OptionKind::Float { .. } => {
+                    arg.value_name("F").value_parser(clap::value_parser!(f64))
+                }
                 OptionKind::Int { min, max, .. } => arg
                     .value_name("N")
                     .value_parser(clap::value_parser!(i64).range(min..=max)),
@@ -464,7 +464,8 @@ fn cmd_search(mut a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("run-dir {}: {e}", dir.display()))?;
         a.out.get_or_insert_with(|| dir.join("best.msr"));
         a.checkpoint_dir.get_or_insert_with(|| dir.clone());
-        a.progress_log.get_or_insert_with(|| dir.join("progress.log"));
+        a.progress_log
+            .get_or_insert_with(|| dir.join("progress.log"));
     }
 
     // --nice: lower scheduling priority so the search yields CPU to other work.
@@ -734,8 +735,8 @@ fn spawn_search(
     // Arm the PUCT value net (--value-net): PUCT then evaluates leaves with the net.
     #[cfg(feature = "neural")]
     if let Some(vf) = &a.value_net {
-        let vp = crate::search::neural::load_value(&vf.to_string_lossy())
-            .map_err(|e| e.to_string())?;
+        let vp =
+            crate::search::neural::load_value(&vf.to_string_lossy()).map_err(|e| e.to_string())?;
         crate::search::neural::install_value(Some(vp));
         log::info!("value net armed ({})", vf.display());
     }
@@ -1021,7 +1022,8 @@ fn cmd_train_value(a: TrainValueArgs, variant: Variant) -> Result<(), String> {
 
     let vp = train_value_net(variant, prior_obj.as_ref(), a.games, a.epochs)
         .map_err(|e| e.to_string())?;
-    vp.save(&a.out.to_string_lossy()).map_err(|e| e.to_string())?;
+    vp.save(&a.out.to_string_lossy())
+        .map_err(|e| e.to_string())?;
     eprintln!("wrote value net: {}", a.out.display());
     Ok(())
 }
@@ -1034,7 +1036,9 @@ fn reject_experimental_algo(id: &str) -> Result<(), String> {
     if crate::search::plugin::registry().method_visible(id) {
         Ok(())
     } else {
-        Err(format!("--algo {id} is experimental; pass --experimental to enable it"))
+        Err(format!(
+            "--algo {id} is experimental; pass --experimental to enable it"
+        ))
     }
 }
 
@@ -1047,7 +1051,9 @@ fn require_experimental(what: &str) -> Result<(), String> {
     if crate::search::plugin::experimental_enabled() {
         Ok(())
     } else {
-        Err(format!("{what} is experimental; pass --experimental to enable it"))
+        Err(format!(
+            "{what} is experimental; pass --experimental to enable it"
+        ))
     }
 }
 

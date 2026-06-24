@@ -183,10 +183,10 @@ pub fn logits(scratch: &GameState, moves: &[Move], out: &mut Vec<f64>) {
 
     if !miss_inputs.is_empty() {
         let vs = src.compute_features(&miss_inputs); // φ for misses (one forward)
-        // On an inference error `compute_features` returns an empty (or short) Vec.
-        // Fall back to a neutral zero contribution for the WHOLE step — reducing to the
-        // base policy, as the prior-bias path does — instead of mixing real θ·φ for
-        // cached moves with a silent 0 for the misses (which would bias the softmax).
+                                                     // On an inference error `compute_features` returns an empty (or short) Vec.
+                                                     // Fall back to a neutral zero contribution for the WHOLE step — reducing to the
+                                                     // base policy, as the prior-bias path does — instead of mixing real θ·φ for
+                                                     // cached moves with a silent 0 for the misses (which would bias the softmax).
         if vs.len() != miss_inputs.len() {
             out.resize(moves.len(), 0.0);
             FEAT.with(|f| f.borrow_mut().keys = keys); // hand the buffer back

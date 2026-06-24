@@ -248,7 +248,9 @@ pub static NEURAL_BIAS: NeuralBias = NeuralBias;
 /// use. The search infers on CPU (per-state, many threads), so a prior is always
 /// loaded on CPU. (Training entry points land in a later phase-5 commit.)
 pub mod prior {
-    use super::dataset::{augmented_samples_from_corpus, augmented_samples_from_games, StateSample};
+    use super::dataset::{
+        augmented_samples_from_corpus, augmented_samples_from_games, StateSample,
+    };
     use super::net::NeuralPrior;
     use super::train::{train, TrainConfig};
     use super::{armed, Arc};
@@ -261,9 +263,14 @@ pub mod prior {
     /// per-island inference in the hot loop. A freshly trained net keeps trainable
     /// `Var`s that aren't sound to share across island threads; the round-trip strips
     /// them. Shared by every `train_on_*`.
-    fn train_and_freeze(samples: &[StateSample], epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+    fn train_and_freeze(
+        samples: &[StateSample],
+        epochs: usize,
+        lr: f64,
+    ) -> candle_core::Result<NeuralPrior> {
         let pr = train(samples, &TrainConfig { epochs, lr }, Device::Cpu)?;
-        let tmp = std::env::temp_dir().join(format!("morpion_prior_{}.safetensors", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("morpion_prior_{}.safetensors", std::process::id()));
         let tmps = tmp.to_string_lossy().into_owned();
         pr.save(&tmps)?;
         let loaded = NeuralPrior::load(&tmps, Device::Cpu);
@@ -273,20 +280,33 @@ pub mod prior {
 
     /// Train a move prior on the human record corpus (D4-augmented), on CPU. ~40 s
     /// for the h64 net; the result is ready to [`arm`]/[`install`] or [`save`].
-    pub fn train_on_corpus(variant: Variant, epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+    pub fn train_on_corpus(
+        variant: Variant,
+        epochs: usize,
+        lr: f64,
+    ) -> candle_core::Result<NeuralPrior> {
         train_and_freeze(&augmented_samples_from_corpus(variant), epochs, lr)
     }
 
     /// Train a move prior on a set of games (D4-augmented), on CPU — the tabula-rasa
     /// path: only games the search produced, no human records. `games` must be
     /// non-empty (an empty set trains nothing useful).
-    pub fn train_on_games(variant: Variant, games: &[Vec<Move>], epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+    pub fn train_on_games(
+        variant: Variant,
+        games: &[Vec<Move>],
+        epochs: usize,
+        lr: f64,
+    ) -> candle_core::Result<NeuralPrior> {
         train_and_freeze(&augmented_samples_from_games(variant, games), epochs, lr)
     }
 
     /// Train a move prior on the **embedded from-scratch corpus** for `variant` (the
     /// bundled self-found games — no human records), on CPU. Errors if none committed.
-    pub fn train_on_bundled_corpus(variant: Variant, epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+    pub fn train_on_bundled_corpus(
+        variant: Variant,
+        epochs: usize,
+        lr: f64,
+    ) -> candle_core::Result<NeuralPrior> {
         let games = super::embedded::corpus(variant);
         if games.is_empty() {
             return Err(candle_core::Error::Msg(format!(
@@ -412,7 +432,10 @@ mod tests {
         prior::install(prior::bundled(Variant::T5));
         let mut third = Vec::new();
         NEURAL_BIAS.biases(&st, &moves, &mut third);
-        assert_eq!(first, third, "a fresh generation reproduces the same logits");
+        assert_eq!(
+            first, third,
+            "a fresh generation reproduces the same logits"
+        );
 
         prior::arm(None);
     }
@@ -475,7 +498,10 @@ mod tests {
         let mut after = Vec::new();
         feat::logits(&st, &moves, &mut after);
 
-        assert!(after.iter().all(|x| x.is_finite()), "θ·φ must stay finite after adapt");
+        assert!(
+            after.iter().all(|x| x.is_finite()),
+            "θ·φ must stay finite after adapt"
+        );
         assert!(
             after.iter().zip(&before).any(|(a, b)| (a - b).abs() > 1e-9),
             "adapt should move at least one logit"

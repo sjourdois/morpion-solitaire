@@ -163,7 +163,11 @@ impl Method for PuctMethod {
     }
     fn method_desc(&self, _ctx: &StartCtx) -> String {
         let c = registry().value_f64("c-puct", 1.5);
-        let policy = if super::is_armed() { "neural" } else { "uniform" };
+        let policy = if super::is_armed() {
+            "neural"
+        } else {
+            "uniform"
+        };
         let leaf = if super::armed_value().is_some() {
             "value"
         } else {

@@ -258,7 +258,11 @@ pub struct ValuePredictor {
 impl ValuePredictor {
     /// Wrap a freshly trained net + its varmap.
     pub fn new(net: ValueNet, varmap: VarMap, device: Device) -> Self {
-        Self { net, varmap, device }
+        Self {
+            net,
+            varmap,
+            device,
+        }
     }
 
     /// Save / load the value weights (safetensors), like the policy net.
@@ -270,7 +274,11 @@ impl ValuePredictor {
         let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
         let net = ValueNet::new(vb)?;
         varmap.load(path)?;
-        Ok(Self { net, varmap, device })
+        Ok(Self {
+            net,
+            varmap,
+            device,
+        })
     }
 
     /// Estimated value (normalised final length, ~[0,1]) of a position. Returns a

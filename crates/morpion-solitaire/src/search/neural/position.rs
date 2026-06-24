@@ -94,7 +94,11 @@ mod tests {
             let f = encode_value(&st, t);
             assert_eq!(f.len(), VALUE_LEN);
             let occ: f32 = f[..PCELLS].iter().sum();
-            assert_eq!(occ as usize, st.board.cells.len(), "transform {t} lost cells");
+            assert_eq!(
+                occ as usize,
+                st.board.cells.len(),
+                "transform {t} lost cells"
+            );
         }
     }
 

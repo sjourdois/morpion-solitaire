@@ -202,7 +202,10 @@ impl Registry {
     /// whose variant doesn't match the option's declared kind (e.g. a stale persisted
     /// value after a spec change) — is a no-op, so the map can't be poisoned.
     pub fn set_value(&self, key: &str, val: OptionValue) {
-        let ok = self.options.iter().any(|s| s.key == key && s.kind.accepts(val));
+        let ok = self
+            .options
+            .iter()
+            .any(|s| s.key == key && s.kind.accepts(val));
         if ok {
             if let Some(slot) = self.values.lock().unwrap().get_mut(key) {
                 *slot = val;
@@ -227,13 +230,19 @@ impl Registry {
         }
     }
     pub fn value_bool(&self, key: &str, default: bool) -> bool {
-        self.value(key).and_then(OptionValue::as_bool).unwrap_or(default)
+        self.value(key)
+            .and_then(OptionValue::as_bool)
+            .unwrap_or(default)
     }
     pub fn value_f64(&self, key: &str, default: f64) -> f64 {
-        self.value(key).and_then(OptionValue::as_f64).unwrap_or(default)
+        self.value(key)
+            .and_then(OptionValue::as_f64)
+            .unwrap_or(default)
     }
     pub fn value_int(&self, key: &str, default: i64) -> i64 {
-        self.value(key).and_then(OptionValue::as_int).unwrap_or(default)
+        self.value(key)
+            .and_then(OptionValue::as_int)
+            .unwrap_or(default)
     }
 
     // ---- hooks resolved once per search into a scalar ---------------------
@@ -378,7 +387,10 @@ impl OptionKind {
         matches!(
             (self, val),
             (OptionKind::Toggle { .. }, OptionValue::Toggle(_))
-                | (OptionKind::Float { .. }, OptionValue::Float(_) | OptionValue::Int(_))
+                | (
+                    OptionKind::Float { .. },
+                    OptionValue::Float(_) | OptionValue::Int(_)
+                )
                 | (OptionKind::Int { .. }, OptionValue::Int(_))
         )
     }
@@ -537,7 +549,10 @@ mod tests {
         for id in ["nrpa", "perturbation", "systematic", "beam"] {
             assert!(reg.method(id).is_some(), "method {id} missing");
         }
-        assert!(reg.method("neural-nrpa").is_none(), "no experimental method on a core build");
+        assert!(
+            reg.method("neural-nrpa").is_none(),
+            "no experimental method on a core build"
+        );
     }
 
     #[test]
@@ -549,9 +564,16 @@ mod tests {
             assert!(by(k).is_some(), "option spec {k} missing");
         }
         // Defaults match the engine defaults (clamp C=3, symmetry on, crossover off).
-        assert!(matches!(by("clamp").unwrap().kind, OptionKind::Float { default, .. } if default == 3.0));
-        assert!(matches!(by("symmetry").unwrap().kind, OptionKind::Toggle { default: true }));
-        assert!(matches!(by("crossover").unwrap().kind, OptionKind::Float { default, .. } if default == 0.0));
+        assert!(
+            matches!(by("clamp").unwrap().kind, OptionKind::Float { default, .. } if default == 3.0)
+        );
+        assert!(matches!(
+            by("symmetry").unwrap().kind,
+            OptionKind::Toggle { default: true }
+        ));
+        assert!(
+            matches!(by("crossover").unwrap().kind, OptionKind::Float { default, .. } if default == 0.0)
+        );
     }
 
     #[test]
@@ -572,11 +594,17 @@ mod tests {
         let reg = registry();
         // Core methods and tuning levers are always visible, regardless of the flag.
         for id in ["nrpa", "perturbation", "systematic", "beam"] {
-            assert!(!reg.is_method_experimental(id), "{id} wrongly tagged experimental");
+            assert!(
+                !reg.is_method_experimental(id),
+                "{id} wrongly tagged experimental"
+            );
             assert!(reg.method_visible(id), "{id} should always be visible");
         }
         for k in ["level", "width", "clamp", "alpha", "symmetry", "crossover"] {
-            assert!(!reg.is_option_experimental(k), "{k} wrongly tagged experimental");
+            assert!(
+                !reg.is_option_experimental(k),
+                "{k} wrongly tagged experimental"
+            );
         }
     }
 
@@ -587,8 +615,14 @@ mod tests {
     fn experimental_surface_is_tagged_and_gated() {
         let _g = REG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let reg = registry();
-        assert!(reg.is_method_experimental("puct"), "puct should be tagged experimental");
-        assert!(reg.is_option_experimental("macros"), "macros should be tagged experimental");
+        assert!(
+            reg.is_method_experimental("puct"),
+            "puct should be tagged experimental"
+        );
+        assert!(
+            reg.is_option_experimental("macros"),
+            "macros should be tagged experimental"
+        );
         // Default (flag off): hidden.
         set_experimental(false);
         assert!(!reg.method_visible("puct"));
