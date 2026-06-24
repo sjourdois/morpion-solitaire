@@ -127,7 +127,13 @@ fn simulate(
             break scratch.history.len() as f64 / 200.0; // terminal node revisited
         }
         let ci = select(&arena[idx], cfg.c_puct);
-        scratch.apply(arena[idx].children[ci].mv);
+        // A move that would overflow the fixed grid is not applied (apply returns
+        // false and sets GRID_OVERFLOW); stop the descent here and back up the current
+        // depth rather than descending into a child whose move never landed (which
+        // would desync `scratch` from the tree path and corrupt the Q backups).
+        if !scratch.apply(arena[idx].children[ci].mv) {
+            break scratch.history.len() as f64 / 200.0;
+        }
         path.push((idx, ci));
         idx = match arena[idx].children[ci].node {
             Some(n) => n,

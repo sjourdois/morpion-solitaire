@@ -204,6 +204,19 @@ impl Registry {
     pub fn value(&self, key: &str) -> Option<OptionValue> {
         self.values.lock().unwrap().get(key).copied()
     }
+
+    /// Reset every experimental option's live value to its spec default. The GUI calls
+    /// this when it disables the experimental surface, so a lab-only knob set while it
+    /// was on stops taking effect — the engine reads the values map directly, and the
+    /// CLI/GUI no longer expose the option to change it back.
+    pub fn reset_experimental_values(&self) {
+        let mut vals = self.values.lock().unwrap();
+        for spec in &self.options {
+            if self.experimental_options.contains(spec.key) {
+                vals.insert(spec.key, spec.kind.default_value());
+            }
+        }
+    }
     pub fn value_bool(&self, key: &str, default: bool) -> bool {
         self.value(key).and_then(OptionValue::as_bool).unwrap_or(default)
     }

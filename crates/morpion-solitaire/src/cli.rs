@@ -452,6 +452,12 @@ fn run(cmd: Command, variant: Variant) -> Result<(), String> {
 fn cmd_search(mut a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     reject_experimental_algo(a.algo.id())?;
+    // The neural move prior / value net are part of the experimental surface, like the
+    // registry-driven neural options — gate them on --experimental too.
+    #[cfg(feature = "neural")]
+    if a.prior.is_some() || a.value_net.is_some() || a.save_prior.is_some() {
+        require_experimental("the neural prior (--prior/--value-net/--save-prior)")?;
+    }
 
     // --run-dir: gather all run outputs under one dir (only fills unset paths).
     if let Some(dir) = a.run_dir.clone() {
@@ -930,6 +936,7 @@ fn cmd_bench(a: BenchArgs, variant: Variant) -> Result<(), String> {
 #[cfg(feature = "neural")]
 fn cmd_tabula_rasa(a: TabulaRasaArgs, variant: Variant) -> Result<(), String> {
     use crate::search::neural::{prior, tabula_rasa};
+    require_experimental("the `tabula-rasa` command")?;
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let cfg = tabula_rasa::TabulaRasaConfig {
@@ -987,6 +994,7 @@ fn cmd_tabula_rasa(a: TabulaRasaArgs, variant: Variant) -> Result<(), String> {
 #[cfg(feature = "neural")]
 fn cmd_train_value(a: TrainValueArgs, variant: Variant) -> Result<(), String> {
     use crate::search::neural::{prior, train_value_net};
+    require_experimental("the `train-value` command")?;
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     // Optional policy prior to guide the long-game rollouts (better length spread).
@@ -1027,6 +1035,19 @@ fn reject_experimental_algo(id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("--algo {id} is experimental; pass --experimental to enable it"))
+    }
+}
+
+/// Reject an experimental capability (named by `what`) unless `--experimental` was
+/// passed. Used for the neural surface that isn't a registry option/method — the
+/// `search --prior`/`--value-net` flags and the `tabula-rasa`/`train-value` commands —
+/// so the whole lab-only surface is gated consistently.
+#[cfg(feature = "neural")]
+fn require_experimental(what: &str) -> Result<(), String> {
+    if crate::search::plugin::experimental_enabled() {
+        Ok(())
+    } else {
+        Err(format!("{what} is experimental; pass --experimental to enable it"))
     }
 }
 
