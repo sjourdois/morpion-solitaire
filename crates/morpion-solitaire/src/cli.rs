@@ -102,10 +102,16 @@ struct SearchArgs {
     #[arg(long, value_enum, default_value_t = AlgoArg::Nrpa)]
     algo: AlgoArg,
     // The engine-tuning levers (--level, --width, --clamp, --alpha, --no-symmetry,
-    // --crossover) are NOT fields here: they are rendered dynamically from the plugin
-    // option registry (see `augment_search_options`) and applied into the registry's
-    // values map before dispatch (`apply_search_options`). Adding a plugin option is
-    // then purely additive — no edit to this struct.
+    // --crossover, --neural-scale) are NOT fields here: they are rendered dynamically
+    // from the plugin option registry (see `augment_search_options`) and applied into
+    // the registry's values map before dispatch (`apply_search_options`). Adding a
+    // plugin option is then purely additive — no edit to this struct.
+    /// Neural move prior (feature `neural`): `bundled` (the shipped from-scratch prior)
+    /// or a path to a safetensors file. Biases NRPA's softmax; set strength with
+    /// `--neural-scale`. Only the NRPA family uses it.
+    #[cfg(feature = "neural")]
+    #[arg(long, value_name = "bundled|FILE")]
+    prior: Option<String>,
     /// Perturbation destroy-size lower bound K_min (default 8). `--algo perturbation`.
     #[arg(long, value_name = "K")]
     kmin: Option<usize>,
@@ -565,6 +571,20 @@ fn spawn_search(
         .as_ref()
         .map(|s| s.variant)
         .unwrap_or(cli_variant);
+
+    // Arm the neural move prior (feature `neural`) before any search thread starts, so
+    // every island reads it. `bundled` is the shipped prior; otherwise a file path.
+    #[cfg(feature = "neural")]
+    if let Some(spec) = &a.prior {
+        let p = if spec == "bundled" {
+            crate::search::neural::prior::bundled(variant)
+                .ok_or_else(|| format!("no bundled prior for {}", variant.name()))?
+        } else {
+            crate::search::neural::prior::load(spec).map_err(|e| e.to_string())?
+        };
+        crate::search::neural::prior::install(Some(p));
+        log::info!("neural prior armed ({spec})");
+    }
 
     // clamp/alpha/symmetry/crossover are already in the registry's values map (applied
     // from the dynamic options in `apply_search_options`). The perturbation destroy

@@ -131,3 +131,5 @@ opt-alpha = Schrittweite (α)
 opt-alpha-hint = Anpassungsschritt der Strategie. Standard 1.0; nur für Experimente ändern.
 opt-crossover = Crossover-Rate
 opt-crossover-hint = Nur Perturbation: Wahrscheinlichkeit, dass eine Runde zwei archivierte Spiele rekombiniert statt zu zerstören/reparieren. 0 = aus.
+opt-neural-scale = Stärke des neuronalen Priors
+opt-neural-scale-hint = β-Skalierung des neuronalen Zug-Priors; Idealwert ≈ 4. Gilt nur mit geladenem Prior.

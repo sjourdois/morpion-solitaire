@@ -131,3 +131,5 @@ opt-alpha = Tamanho do passo (α)
 opt-alpha-hint = Passo de adaptação da política. 1.0 por omissão; ajuste apenas para experiências.
 opt-crossover = Taxa de cruzamento
 opt-crossover-hint = Apenas perturbação: probabilidade de uma ronda recombinar dois jogos arquivados em vez de destruir/reparar. 0 = desligado.
+opt-neural-scale = Força do prior neuronal
+opt-neural-scale-hint = Escala β do prior neuronal de jogadas; ótimo ≈ 4. Só se aplica com um prior carregado.
