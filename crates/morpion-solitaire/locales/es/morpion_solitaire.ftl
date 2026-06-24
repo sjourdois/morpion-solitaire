@@ -117,3 +117,17 @@ pick-mode-click = Clic
 pick-mode-aim-hint = Apunta con el cursor, rueda para cambiar de línea, clic para jugar.
 pick-mode-click-hint = Clic para fijar el punto, mueve para apuntar, clic de nuevo para jugar.
 pick-locked-hint = Apunta la línea · clic para jugar · clic derecho o Esc para cancelar
+
+# Opciones de ajuste del motor (renderizadas genéricamente desde el registro de plugins)
+opt-level = Nivel NRPA
+opt-level-hint = Profundidad de anidamiento. 3 = rápido (~99 en un minuto); 4+ busca más profundo pero solo compensa en ejecuciones largas.
+opt-width = Anchura del haz
+opt-width-hint = Candidatos conservados en cada profundidad. Más ancho = más exhaustivo pero más lento.
+opt-symmetry = Codificación por simetría
+opt-symmetry-hint = Codificación canónica D4 de jugadas. Desactívala (solo marco identidad) para ~+16 % de rendimiento con puntuación neutra — útil para ejecuciones en frío.
+opt-clamp = Recorte de logits (C)
+opt-clamp-hint = Recorte Stabilized-NRPA. 3 es el punto óptimo para cazar récords; 0 lo desactiva.
+opt-alpha = Tamaño de paso (α)
+opt-alpha-hint = Paso de adaptación de la política. 1.0 por defecto; ajústalo solo para experimentos.
+opt-crossover = Tasa de cruce
+opt-crossover-hint = Solo perturbación: probabilidad de que una ronda recombine dos partidas archivadas en vez de destruir/reparar. 0 = desactivado.

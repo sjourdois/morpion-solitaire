@@ -117,3 +117,17 @@ pick-mode-click = Clic
 pick-mode-aim-hint = Visez au curseur, molette pour changer de ligne, clic pour jouer.
 pick-mode-click-hint = Cliquez pour verrouiller le point, déplacez pour viser, recliquez pour jouer.
 pick-locked-hint = Visez la ligne · clic pour jouer · clic droit ou Échap pour annuler
+
+# Options de réglage du moteur (rendues génériquement depuis le registre de plugins)
+opt-level = Niveau NRPA
+opt-level-hint = Profondeur d'imbrication. 3 = rapide (~99 en une minute) ; 4+ cherche plus profond mais ne paie que sur de longues durées.
+opt-width = Largeur du faisceau
+opt-width-hint = Candidats conservés à chaque profondeur. Plus large = plus exhaustif mais plus lent.
+opt-symmetry = Codage par symétrie
+opt-symmetry-hint = Codage canonique D4 des coups. Désactivez (repère identité seul) pour ~+16 % de débit à score neutre — utile pour les runs « à froid ».
+opt-clamp = Bornage des logits (C)
+opt-clamp-hint = Bornage Stabilized-NRPA. 3 est le point idéal pour la chasse aux records ; 0 le désactive.
+opt-alpha = Pas d'apprentissage (α)
+opt-alpha-hint = Pas d'adaptation de la politique. 1.0 par défaut ; à ne régler que pour des expériences.
+opt-crossover = Taux de croisement
+opt-crossover-hint = Perturbation uniquement : probabilité qu'un tour recombine deux parties archivées au lieu de détruire/réparer. 0 = désactivé.

@@ -19,9 +19,6 @@ use web_time::Instant;
 /// (systematic) or under a millisecond (NRPA), so once a minute is negligible.
 const AUTO_CHECKPOINT_SECS: f64 = 60.0;
 
-/// NRPA nesting level used when launching/resuming the NRPA search.
-const NRPA_LEVEL: usize = 3;
-
 /// The 5T world record (Rosin, 178). Beating it triggers the audio alarm. Only
 /// 5T games can exceed this, so the check needs no per-variant logic.
 const WORLD_RECORD_5T: u32 = 178;
@@ -78,9 +75,6 @@ pub struct MorpionApp {
     view_zoom: f32,
     view_pan: egui::Vec2,
     algo: SearchAlgo,
-    /// NRPA nesting level. 3 is the fast default (~99 in a minute); 4+ searches
-    /// more deeply but only pays off over multi-hour runs.
-    nrpa_level: usize,
     /// Where the next search begins (fresh cross, seeded cross, or continue the
     /// loaded position). Coerced to a value the current algorithm supports.
     start_point: StartPoint,
@@ -238,9 +232,16 @@ impl MorpionApp {
         let export_format = get("export_format")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(ExportFormat::Msr);
-        let nrpa_level = get("nrpa_level")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(NRPA_LEVEL);
+        // Restore persisted engine-tuning option values into the plugin registry (the
+        // GUI's source of truth for them). `set_value` rejects any value whose variant
+        // no longer matches its spec, so a stale entry after a spec change is ignored.
+        for spec in crate::search::plugin::registry().options() {
+            if let Some(v) = get(&format!("opt:{}", spec.key))
+                .and_then(|s| serde_json::from_str::<crate::search::plugin::OptionValue>(&s).ok())
+            {
+                crate::search::plugin::registry().set_value(spec.key, v);
+            }
+        }
         let variant = get("variant")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(Variant::T5);
@@ -266,7 +267,6 @@ impl MorpionApp {
             view_zoom: 1.0,
             view_pan: egui::Vec2::ZERO,
             algo,
-            nrpa_level,
             start_point,
             export_format,
             selected_variant: variant,
@@ -1208,7 +1208,7 @@ impl MorpionApp {
         let s = SearchState::new();
         let s2 = s.clone();
         let algo = self.algo;
-        let level = self.nrpa_level;
+        let level = crate::search::plugin::registry().level();
         // Seeded NRPA starts from a fresh cross but seeds the policy from the
         // loaded game's moves (the loaded game is a prior, not the start).
         let warm_seq = (algo == SearchAlgo::Nrpa
@@ -1309,7 +1309,7 @@ impl MorpionApp {
         self.exhausted_seen = false;
         let s = SearchState::new();
         let s2 = s.clone();
-        let level = self.nrpa_level;
+        let level = crate::search::plugin::registry().level();
         let variant = cp.variant;
         match cp.algo.as_str() {
             "perturbation" => {
@@ -1400,7 +1400,15 @@ impl eframe::App for MorpionApp {
         set("view_arrows", self.view_arrows.to_string());
         set("view_numbers", self.view_numbers.to_string());
         set("show_legal", self.show_legal.to_string());
-        set("nrpa_level", self.nrpa_level.to_string());
+        // Persist the engine-tuning option values (rendered generically from the
+        // registry); restored in `new`.
+        for spec in crate::search::plugin::registry().options() {
+            if let Some(v) = crate::search::plugin::registry().value(spec.key) {
+                if let Ok(s) = serde_json::to_string(&v) {
+                    set(&format!("opt:{}", spec.key), s);
+                }
+            }
+        }
         if let Ok(s) = serde_json::to_string(&self.selected_variant) {
             set("variant", s);
         }
@@ -1664,7 +1672,6 @@ impl eframe::App for MorpionApp {
                         variant: self.selected_variant,
                         algo: self.algo,
                         showing_preview: self.search_preview.is_some(),
-                        nrpa_level: self.nrpa_level,
                         start_point: self.start_point,
                         export_format: self.export_format,
                         dark_mode: self.dark_mode,
@@ -1698,9 +1705,6 @@ impl eframe::App for MorpionApp {
                     if !controls::start_points_for(a).contains(&self.start_point) {
                         self.start_point = StartPoint::Empty;
                     }
-                }
-                if let Some(level) = out.set_nrpa_level {
-                    self.nrpa_level = level;
                 }
                 if let Some(sp) = out.set_start_point {
                     self.start_point = sp;

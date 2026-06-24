@@ -117,3 +117,17 @@ pick-mode-click = クリック
 pick-mode-aim-hint = カーソルで照準、ホイールで線を切り替え、クリックで着手。
 pick-mode-click-hint = クリックで点を固定、移動して照準、もう一度クリックで着手。
 pick-locked-hint = 線を狙う · クリックで配置 · 右クリックまたは Esc で取消
+
+# エンジン調整オプション（プラグインレジストリから汎用的に描画）
+opt-level = NRPA レベル
+opt-level-hint = 入れ子の深さ。3 = 高速（1 分で約 99）。4 以上はより深く探索するが、長時間実行でのみ効果がある。
+opt-width = ビーム幅
+opt-width-hint = 各深さで保持する候補数。広いほど網羅的だが遅くなる。
+opt-symmetry = 対称符号化
+opt-symmetry-hint = 手の正準 D4 符号化。オフ（恒等フレームのみ）にするとスコアは同等で約 +16% 高速 — コールドな記録探索に有効。
+opt-clamp = ロジットクランプ (C)
+opt-clamp-hint = Stabilized-NRPA のクランプ。記録狙いでは 3 が最適。0 で無効。
+opt-alpha = ステップ幅 (α)
+opt-alpha-hint = 方策の適応ステップ。既定は 1.0。実験時のみ調整。
+opt-crossover = 交叉率
+opt-crossover-hint = 摂動のみ：1 ラウンドが破壊・修復の代わりに 2 つの保存済みゲームを組み換える確率。0 = 無効。

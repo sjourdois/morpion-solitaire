@@ -117,3 +117,17 @@ pick-mode-click = Klik
 pick-mode-aim-hint = Richt met de cursor, scrollwiel wisselt de lijn, klik om te spelen.
 pick-mode-click-hint = Klik om het punt te vergrendelen, beweeg om te richten, klik nogmaals om te spelen.
 pick-locked-hint = Richt de lijn · klik om te spelen · rechtsklik of Esc om te annuleren
+
+# Engine-afstemopties (generiek gerenderd vanuit het plugin-register)
+opt-level = NRPA-niveau
+opt-level-hint = Nestdiepte. 3 = snel (~99 in een minuut); 4+ zoekt dieper maar loont alleen bij lange runs.
+opt-width = Bundelbreedte
+opt-width-hint = Kandidaten die per diepte behouden blijven. Breder = grondiger maar trager.
+opt-symmetry = Symmetriecodering
+opt-symmetry-hint = Canonieke D4-zetcodering. Uit (alleen identiteitsframe) voor ~+16% doorvoer bij neutrale score — handig voor koude recordruns.
+opt-clamp = Logit-begrenzing (C)
+opt-clamp-hint = Stabilized-NRPA-begrenzing. 3 is het zoete punt voor recordjacht; 0 schakelt het uit.
+opt-alpha = Stapgrootte (α)
+opt-alpha-hint = Aanpassingsstap van het beleid. Standaard 1.0; alleen bijstellen voor experimenten.
+opt-crossover = Crossover-percentage
+opt-crossover-hint = Alleen perturbatie: kans dat een ronde twee gearchiveerde spellen hercombineert in plaats van vernietigen/herstellen. 0 = uit.

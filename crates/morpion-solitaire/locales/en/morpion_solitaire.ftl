@@ -117,3 +117,17 @@ pick-mode-click = Click
 pick-mode-aim-hint = Aim with the cursor, scroll wheel to cycle lines, click to play.
 pick-mode-click-hint = Click to lock the point, move to aim the line, click again to play.
 pick-locked-hint = Aim the line · click to play · right-click or Esc to cancel
+
+# Engine-tuning options (rendered generically from the plugin registry)
+opt-level = NRPA level
+opt-level-hint = Nesting depth. 3 = fast (~99 in a minute); 4+ searches deeper but only pays off over long runs.
+opt-width = Beam width
+opt-width-hint = Candidates kept at each depth. Wider = broader but slower.
+opt-symmetry = Symmetry coding
+opt-symmetry-hint = Canonical D4 move coding. Turn off (identity frame only) for ~+16% throughput at a neutral score — good for cold record runs.
+opt-clamp = Logit clamp (C)
+opt-clamp-hint = Stabilized-NRPA clamp. 3 is the sweet spot for record hunting; 0 disables it.
+opt-alpha = Step size (α)
+opt-alpha-hint = Policy adaptation step. 1.0 is the default; only re-tune for experiments.
+opt-crossover = Crossover rate
+opt-crossover-hint = Perturbation only: chance a round recombines two archived games instead of destroy/repair. 0 = off.

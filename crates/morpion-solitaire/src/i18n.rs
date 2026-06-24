@@ -21,6 +21,14 @@ pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
     loader
 });
 
+/// Runtime translation of an argument-free message id. The `fl!` macro needs a
+/// literal key (checked against the bundle at compile time); use this where the key is
+/// only known at runtime — e.g. the generic option widgets rendered from the plugin
+/// registry's [`OptionSpec`](crate::search::plugin::OptionSpec)s.
+pub fn tr(key: &str) -> String {
+    LANGUAGE_LOADER.get(key)
+}
+
 /// Switch the active UI language.  Silently falls back to French on error.
 pub fn set_language(lang: &LanguageIdentifier) {
     let _ = i18n_embed::select(

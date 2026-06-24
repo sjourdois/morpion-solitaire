@@ -101,27 +101,11 @@ struct SearchArgs {
     /// Search engine.
     #[arg(long, value_enum, default_value_t = AlgoArg::Nrpa)]
     algo: AlgoArg,
-    /// NRPA nesting level (recursion depth).
-    #[arg(long, default_value_t = 3)]
-    level: usize,
-    /// Beam width.
-    #[arg(long, default_value_t = 64)]
-    width: usize,
-    /// Stabilized-NRPA logit clamp C (default 3; `0` disables clamping). The tight
-    /// sweet spot for record hunting; only re-tune for experiments.
-    #[arg(long, value_name = "C")]
-    clamp: Option<f64>,
-    /// Policy adaptation step size α (default 1.0).
-    #[arg(long, value_name = "A")]
-    alpha: Option<f64>,
-    /// Drop symmetry-invariant move coding (identity frame only): ~+16 % throughput
-    /// at neutral score — recommended for cold record runs without warm-start.
-    #[arg(long)]
-    no_symmetry: bool,
-    /// Perturbation genetic-crossover rate (0 = off). Only used by
-    /// `--algo perturbation`.
-    #[arg(long, default_value_t = 0.0)]
-    crossover: f64,
+    // The engine-tuning levers (--level, --width, --clamp, --alpha, --no-symmetry,
+    // --crossover) are NOT fields here: they are rendered dynamically from the plugin
+    // option registry (see `augment_search_options`) and applied into the registry's
+    // values map before dispatch (`apply_search_options`). Adding a plugin option is
+    // then purely additive — no edit to this struct.
     /// Perturbation destroy-size lower bound K_min (default 8). `--algo perturbation`.
     #[arg(long, value_name = "K")]
     kmin: Option<usize>,
@@ -248,10 +232,71 @@ struct BenchArgs {
     time: Duration,
 }
 
+/// Augment the `search` subcommand with the engine-tuning options rendered from the
+/// plugin registry (so the dynamic options appear in `search --help` and parse), then
+/// build the clap command. The CLI names no specific plugin — adding an option spec is
+/// all it takes for a new flag to appear.
+fn build_command() -> clap::Command {
+    use crate::search::plugin::{registry, OptionKind};
+    use clap::{Arg, ArgAction, CommandFactory};
+    Cli::command().mut_subcommand("search", |mut sc| {
+        for spec in registry().options() {
+            // clap wants a 'static flag name; the command is built once at startup, so
+            // leaking the handful of computed `--no-<key>` names is fine.
+            let flag: &'static str = Box::leak(spec.cli_flag().into_boxed_str());
+            let arg = Arg::new(spec.key).long(flag).help(spec.help);
+            let arg = match spec.kind {
+                OptionKind::Toggle { .. } => arg.action(ArgAction::SetTrue),
+                OptionKind::Float { .. } => arg
+                    .value_name("F")
+                    .value_parser(clap::value_parser!(f64)),
+                OptionKind::Int { min, max, .. } => arg
+                    .value_name("N")
+                    .value_parser(clap::value_parser!(i64).range(min..=max)),
+            };
+            sc = sc.arg(arg);
+        }
+        sc
+    })
+}
+
+/// Push the dynamically-parsed engine options into the registry's values map. A toggle
+/// defaulting *on* is flagged as `--no-<key>` (opt-out ⇒ set false); a default-off
+/// toggle sets true. Only options the user actually passed overwrite the seeded default.
+fn apply_search_options(sub: &clap::ArgMatches) {
+    use crate::search::plugin::{registry, OptionKind, OptionValue};
+    let reg = registry();
+    for spec in reg.options() {
+        match spec.kind {
+            OptionKind::Toggle { default } => {
+                if sub.get_flag(spec.key) {
+                    reg.set_value(spec.key, OptionValue::Toggle(!default));
+                }
+            }
+            OptionKind::Float { .. } => {
+                if let Some(v) = sub.get_one::<f64>(spec.key) {
+                    reg.set_value(spec.key, OptionValue::Float(*v));
+                }
+            }
+            OptionKind::Int { .. } => {
+                if let Some(v) = sub.get_one::<i64>(spec.key) {
+                    reg.set_value(spec.key, OptionValue::Int(*v));
+                }
+            }
+        }
+    }
+}
+
 /// Parse the CLI. Returns `None` when the GUI should run (no subcommand or
 /// `gui`); otherwise runs the chosen subcommand and exits with its status.
 pub fn dispatch() -> Option<()> {
-    let cli = Cli::parse();
+    use clap::FromArgMatches;
+    let matches = build_command().get_matches();
+    // Apply the dynamic engine options into the registry before running the search.
+    if let Some(sub) = matches.subcommand_matches("search") {
+        apply_search_options(sub);
+    }
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let variant = parse_variant_or_exit(&cli.variant);
     match cli.command {
         None | Some(Command::Gui) => None, // hand back to the GUI
@@ -486,8 +531,11 @@ fn spawn_search(
     cli_variant: Variant,
     search: &Arc<SearchState>,
 ) -> Result<(Variant, String), String> {
-    let level = a.level;
-    let width = a.width;
+    // Engine-tuning levers come from the plugin registry's values map (already
+    // populated from the dynamic CLI options in `apply_search_options`).
+    let reg = crate::search::plugin::registry();
+    let level = reg.level();
+    let width = reg.width();
 
     // Resume takes precedence and carries its own variant/engine.
     if let Some(path) = &a.resume {
@@ -518,17 +566,9 @@ fn spawn_search(
         .map(|s| s.variant)
         .unwrap_or(cli_variant);
 
-    // Core tuning levers (proper options, not env vars). Process-global overrides
-    // read by every island thread; set them before spawning. Unset ⇒ engine default.
-    if let Some(c) = a.clamp {
-        crate::search::plugin::set_clamp(c);
-    }
-    if let Some(al) = a.alpha {
-        crate::search::plugin::set_alpha(al);
-    }
-    if a.no_symmetry {
-        crate::search::plugin::set_symmetry(false);
-    }
+    // clamp/alpha/symmetry/crossover are already in the registry's values map (applied
+    // from the dynamic options in `apply_search_options`). The perturbation destroy
+    // bounds remain typed nrpa overrides; set them before spawning.
     if let Some(k) = a.kmin {
         nrpa::set_perturb_k_min_override(k);
     }
@@ -537,9 +577,6 @@ fn spawn_search(
     }
     if let Some(w) = a.window {
         nrpa::set_perturb_window_override(w);
-    }
-    if a.crossover > 0.0 {
-        crate::search::plugin::set_crossover(a.crossover);
     }
 
     let s = search.clone();
