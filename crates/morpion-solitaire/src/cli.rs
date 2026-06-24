@@ -521,13 +521,13 @@ fn spawn_search(
     // Core tuning levers (proper options, not env vars). Process-global overrides
     // read by every island thread; set them before spawning. Unset ⇒ engine default.
     if let Some(c) = a.clamp {
-        nrpa::set_clamp_override(c);
+        crate::search::plugin::set_clamp(c);
     }
     if let Some(al) = a.alpha {
-        nrpa::set_alpha_override(al);
+        crate::search::plugin::set_alpha(al);
     }
     if a.no_symmetry {
-        nrpa::set_sym_override(false);
+        crate::search::plugin::set_symmetry(false);
     }
     if let Some(k) = a.kmin {
         nrpa::set_perturb_k_min_override(k);

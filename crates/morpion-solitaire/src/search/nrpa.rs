@@ -33,15 +33,10 @@ use crate::game::{
     state::GameState,
 };
 
-// ---- CLI run-config overrides ---------------------------------------------
-// The CLI exposes the core tuning levers as proper options, never env vars. Each
-// lever is a process-global atomic set once *before* a search launches, so every
-// island thread observes it; when unset, the reader returns the baked-in default.
-// One search runs at a time, so a single global slot is unambiguous.
-const F64_UNSET: u64 = u64::MAX; // f64-bits sentinel ⇒ "not overridden"
-static SYM_OVR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0 unset · 1 off · 2 on
-static CLAMP_OVR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(F64_UNSET); // f64 bits; ≤0 ⇒ off
-static ALPHA_OVR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(F64_UNSET);
+// ---- Perturbation run-config overrides ------------------------------------
+// Destroy-size / window levers as process-global atomics (set once before a search
+// launches; `0` ⇒ unset ⇒ default). The clamp / α / symmetry levers are modifier
+// plugins now (see `search::plugin`), resolved from the registry.
 #[cfg(not(target_arch = "wasm32"))]
 static KMIN_OVR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // 0 ⇒ unset
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,21 +44,6 @@ static KMAX_OVR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize
 #[cfg(not(target_arch = "wasm32"))]
 static WINDOW_OVR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Override symmetry-invariant move coding (`--symmetry` / `--no-symmetry`).
-#[allow(dead_code)] // used by the CLI
-pub fn set_sym_override(on: bool) {
-    SYM_OVR.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-}
-/// Override the Stabilized-NRPA logit clamp C (`--clamp`; `0` ⇒ no clamping).
-#[allow(dead_code)]
-pub fn set_clamp_override(c: f64) {
-    CLAMP_OVR.store(c.to_bits(), Ordering::Relaxed);
-}
-/// Override the policy adaptation step size α (`--alpha`).
-#[allow(dead_code)]
-pub fn set_alpha_override(alpha: f64) {
-    ALPHA_OVR.store(alpha.to_bits(), Ordering::Relaxed);
-}
 /// Override the perturbation destroy-size lower bound K_min (`--kmin`).
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
@@ -81,20 +61,6 @@ pub fn set_perturb_k_max_override(k: usize) {
 #[allow(dead_code)]
 pub fn set_perturb_window_override(w: usize) {
     WINDOW_OVR.store(w, Ordering::Relaxed);
-}
-
-/// Policy adaptation step size α. Default 1.0 (the unclamped sweet spot; 0.5 and
-/// 2.0 both regressed to ~92 *without* clamping). Clamping changes the dynamics,
-/// so `--alpha` re-opens it for sweeping under clamp.
-fn nrpa_alpha() -> f64 {
-    let o = ALPHA_OVR.load(Ordering::Relaxed);
-    if o != F64_UNSET {
-        let a = f64::from_bits(o);
-        if a > 0.0 {
-            return a;
-        }
-    }
-    1.0
 }
 
 /// GNRPA prior-bias strength (per occupied neighbour). 0 ⇒ plain NRPA.
@@ -218,10 +184,10 @@ fn beta(state: &GameState, pos: Pos) -> f64 {
 }
 
 // NRPA tuning knobs (env). NRPA_TEMP, NRPA_LOCAL and NRPA_PORTFOLIO are
-// experimental and within NRPA's run-to-run variance at short budgets. NRPA_CLAMP
-// (Stabilized-NRPA logit clamping) was a decisive win and is now ON BY DEFAULT at
-// C=3 (see `nrpa_clamp`): clamping lifts the mean and cuts variance, and the gap
-// over unclamped grows with budget/level (5T L4/120s ~112 vs ~95), so it scales.
+// experimental and within NRPA's run-to-run variance at short budgets. The logit
+// clamp (Stabilized-NRPA) was a decisive win and is ON BY DEFAULT at C=3 — now a
+// modifier plugin (see `search::plugin`): clamping lifts the mean and cuts variance,
+// and the gap over unclamped grows with budget/level (5T L4/120s ~112 vs ~95).
 
 /// Softmax temperature τ (`NRPA_TEMP`, default 1.0): weight ∝ exp(logit/τ). >1
 /// flattens (more exploration), <1 sharpens. Read once.
@@ -237,22 +203,6 @@ fn nrpa_temp() -> f64 {
     })
 }
 
-/// Stabilization: clamp every adapted policy logit to ±C — a Stabilized-NRPA
-/// flavour that curbs the premature convergence runaway weights cause. **On by
-/// default at C = 3** (`--clamp <C>` overrides; `--clamp 0` disables). Set
-/// from a sweep where clamping lifts the mean *and* cuts variance, and the gain
-/// **grows** with budget/level rather than capping. The C sweet spot is tight:
-/// 5T L4/120 s mean best — off 95, C=2 99, **C=3 112**, C=4 105, C=6 94 (C=3 beat
-/// C=4 in every round of a 5-round head-to-head). Read once.
-fn nrpa_clamp() -> Option<f64> {
-    let o = CLAMP_OVR.load(Ordering::Relaxed);
-    if o != F64_UNSET {
-        let c = f64::from_bits(o);
-        return if c > 0.0 { Some(c) } else { None };
-    }
-    Some(3.0) // unset ⇒ default on at C=3
-}
-
 /// Mix a symmetry-invariant local-neighbourhood feature into the move code
 /// (`NRPA_LOCAL=1`, default off) so the policy generalizes across positions
 /// sharing a local pattern — between position-specific and move-only coding.
@@ -264,15 +214,6 @@ fn nrpa_local() -> bool {
             .map(|v| v == "1")
             .unwrap_or(false)
     })
-}
-
-/// Symmetry-invariant move coding (default on). On: moves are coded in the board's
-/// canonical D4 frame and all 8 Zobrist hashes are maintained. Off (`--no-symmetry`):
-/// the identity frame only (one hash), skipping the 8-hash maintenance — ~+16%
-/// throughput at neutral score, for cold record runs.
-fn nrpa_sym() -> bool {
-    // 1 ⇒ off, 2 ⇒ on, 0 (unset) ⇒ default on.
-    SYM_OVR.load(Ordering::Relaxed) != 1
 }
 
 /// Island portfolio (`NRPA_PORTFOLIO=1`, default off): spread each island's
@@ -291,7 +232,7 @@ thread_local! {
     /// 1/τ for the current island's playouts and adapts (set in `island`).
     static TEMP_INV: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
     /// Per-island clamp override (set in `island` when the clamp portfolio is on);
-    /// `None` ⇒ use the global [`nrpa_clamp`]. Lets diverse islands stabilize at
+    /// `None` ⇒ use the global clamp (`registry().clamp()`). Lets diverse islands stabilize at
     /// different C, so the *global best* (what record hunting wants) benefits from
     /// whichever C suits a given run, not a single compromise C.
     static CLAMP_OVERRIDE: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
@@ -1012,7 +953,7 @@ fn playout(
     let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
-    let sym_on = nrpa_sym();
+    let sym_on = crate::search::plugin::registry().sym_on();
     // Buffers reused across every step of this playout (cleared per step) so the
     // hottest loop in the search does no per-node heap allocation.
     let mut moves: Vec<Move> = Vec::new();
@@ -1112,13 +1053,14 @@ fn adapt(
     let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
-    let sym_on = nrpa_sym();
-    // Per-island portfolio clamp if set, else the global default.
+    let reg = crate::search::plugin::registry();
+    let sym_on = reg.sym_on();
+    // Per-island portfolio clamp if set, else the global default (from the registry).
     let clamp = match CLAMP_OVERRIDE.with(|c| c.get()) {
         Some(c) => Some(c),
-        None => nrpa_clamp(),
+        None => reg.clamp(),
     };
-    let alpha = nrpa_alpha();
+    let alpha = reg.alpha();
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
     let mut moves: Vec<Move> = Vec::new();
