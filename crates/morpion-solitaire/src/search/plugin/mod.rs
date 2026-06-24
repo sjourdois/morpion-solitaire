@@ -21,7 +21,8 @@ mod perturbation;
 #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
 mod puct;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::game::{moves::Move, rules::Variant, state::GameState};
@@ -109,6 +110,12 @@ pub struct Registry {
     /// Live option values, keyed by [`OptionSpec::key`]. Seeded with each spec's
     /// default as the plugin registers; overwritten by the CLI/GUI before a search.
     values: Mutex<HashMap<&'static str, OptionValue>>,
+    /// Method ids / option keys contributed by an [`experimental`](Plugin::experimental)
+    /// plugin. Tagged in the build loop (by diffing what each plugin registers), then
+    /// read by the CLI/GUI to hide lab-only surface unless `--experimental` is set. The
+    /// plugins still register — the engine is built once; this is a visibility gate only.
+    experimental_methods: HashSet<&'static str>,
+    experimental_options: HashSet<&'static str>,
 }
 
 impl Registry {
@@ -153,6 +160,31 @@ impl Registry {
     /// core build (no bias plugin) pays nothing.
     pub fn bias_modifier(&self) -> Option<&'static dyn BiasModifier> {
         self.bias
+    }
+
+    // ---- experimental visibility ------------------------------------------
+    //
+    // An experimental plugin's methods/options are tagged at build time; the CLI/GUI
+    // ask whether each is *visible* (core always; experimental only under the global
+    // `--experimental` flag). The plugins are still registered, so the engine itself is
+    // unchanged — this only controls what the user surfaces expose.
+
+    /// Whether method `id` was contributed by an experimental plugin.
+    pub fn is_method_experimental(&self, id: &str) -> bool {
+        self.experimental_methods.contains(id)
+    }
+    /// Whether option `key` was contributed by an experimental plugin.
+    pub fn is_option_experimental(&self, key: &str) -> bool {
+        self.experimental_options.contains(key)
+    }
+    /// Whether method `id` should be exposed in the current run: always for core
+    /// methods, only under `--experimental` for lab-only ones.
+    pub fn method_visible(&self, id: &str) -> bool {
+        !self.is_method_experimental(id) || experimental_enabled()
+    }
+    /// Whether option `key` should be exposed in the current run (see [`method_visible`]).
+    pub fn option_visible(&self, key: &str) -> bool {
+        !self.is_option_experimental(key) || experimental_enabled()
     }
 
     // ---- the values map (single source of truth) --------------------------
@@ -243,6 +275,20 @@ impl Registry {
 #[allow(dead_code)] // used by the CLI/GUI
 pub fn set_option(key: &str, val: OptionValue) {
     registry().set_value(key, val);
+}
+
+/// Whether experimental (lab-only) methods & options are surfaced this run. Off by
+/// default; the CLI `--experimental` flag and the GUI toggle flip it.
+static EXPERIMENTAL: AtomicBool = AtomicBool::new(false);
+
+/// Enable/disable the experimental surface (CLI flag / GUI toggle).
+#[allow(dead_code)] // used by the CLI/GUI
+pub fn set_experimental(on: bool) {
+    EXPERIMENTAL.store(on, Ordering::Relaxed);
+}
+/// Whether the experimental surface is currently enabled.
+pub fn experimental_enabled() -> bool {
+    EXPERIMENTAL.load(Ordering::Relaxed)
 }
 
 // ---- modifier hooks (presence markers) ------------------------------------
@@ -372,7 +418,9 @@ pub trait Plugin: Sync {
     fn deps(&self) -> &'static [&'static str] {
         &[]
     }
-    #[allow(dead_code)] // used by the GUI/registry to mark lab-only plugins
+    /// Whether this plugin's methods & options are lab-only — surfaced by the CLI/GUI
+    /// only under `--experimental`. The registry tags what it contributes (see
+    /// [`Registry::method_visible`]); the plugin still registers either way.
     fn experimental(&self) -> bool {
         false
     }
@@ -430,7 +478,18 @@ pub fn registry() -> &'static Registry {
             let mut still: Vec<&'static dyn Plugin> = Vec::new();
             for p in remaining {
                 if p.deps().iter().all(|d| done.contains(d)) {
+                    // Tag what an experimental plugin contributes by diffing the
+                    // method/option lists across its register() call.
+                    let (m0, o0) = (reg.methods.len(), reg.options.len());
                     p.register(&mut reg);
+                    if p.experimental() {
+                        let new_methods: Vec<&'static str> =
+                            reg.methods[m0..].iter().map(|m| m.id()).collect();
+                        let new_options: Vec<&'static str> =
+                            reg.options[o0..].iter().map(|o| o.key).collect();
+                        reg.experimental_methods.extend(new_methods);
+                        reg.experimental_options.extend(new_options);
+                    }
                     done.insert(p.id());
                     progressed = true;
                 } else {
@@ -488,6 +547,39 @@ mod tests {
         assert_eq!(reg.crossover_rate(), 0.0);
         assert_eq!(reg.level(), 3);
         assert_eq!(reg.width(), 64);
+    }
+
+    #[test]
+    fn core_surface_is_never_experimental() {
+        let reg = registry();
+        // Core methods and tuning levers are always visible, regardless of the flag.
+        for id in ["nrpa", "perturbation", "systematic", "beam"] {
+            assert!(!reg.is_method_experimental(id), "{id} wrongly tagged experimental");
+            assert!(reg.method_visible(id), "{id} should always be visible");
+        }
+        for k in ["level", "width", "clamp", "alpha", "symmetry", "crossover"] {
+            assert!(!reg.is_option_experimental(k), "{k} wrongly tagged experimental");
+        }
+    }
+
+    // The experimental plugins (macros, neural, feature-space, PUCT) compile only with
+    // the `neural` feature, on native; check their surface is tagged & gated there.
+    #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
+    #[test]
+    fn experimental_surface_is_tagged_and_gated() {
+        let _g = REG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let reg = registry();
+        assert!(reg.is_method_experimental("puct"), "puct should be tagged experimental");
+        assert!(reg.is_option_experimental("macros"), "macros should be tagged experimental");
+        // Default (flag off): hidden.
+        set_experimental(false);
+        assert!(!reg.method_visible("puct"));
+        assert!(!reg.option_visible("macros"));
+        // Flag on: visible.
+        set_experimental(true);
+        assert!(reg.method_visible("puct"));
+        assert!(reg.option_visible("macros"));
+        set_experimental(false); // restore for other tests
     }
 
     #[test]
