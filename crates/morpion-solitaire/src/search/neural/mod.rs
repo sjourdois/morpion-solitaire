@@ -15,6 +15,7 @@
 
 pub mod dataset;
 pub mod embedded;
+pub mod feat;
 pub mod features;
 pub mod net;
 pub mod position;
@@ -267,6 +268,31 @@ impl Plugin for NeuralPlugin {
             },
             scope: Scope::NrpaFamily,
         });
+        // Feature-space NRPA (φ-B): adapt a head θ over the net's frozen features
+        // online, in place of the frozen bias. Experimental; needs a prior.
+        reg.add_option(OptionSpec {
+            key: "feat-adapt",
+            label_key: "opt-feat-adapt",
+            help_key: "opt-feat-adapt-hint",
+            help: "Feature-space NRPA: adapt a linear head θ over the net's frozen \
+                   features online (φ-B) instead of a frozen prior bias. Needs --prior. \
+                   Experimental.",
+            kind: OptionKind::Toggle { default: false },
+            scope: Scope::NrpaFamily,
+        });
+        reg.add_option(OptionSpec {
+            key: "feat-alpha",
+            label_key: "opt-feat-alpha",
+            help_key: "opt-feat-alpha-hint",
+            help: "Feature-space head step size α_θ (default 0.1). Only with --feat-adapt.",
+            kind: OptionKind::Float {
+                default: feat::DEFAULT_FEAT_ALPHA,
+                min: 0.01,
+                max: 1.0,
+                step: 0.01,
+            },
+            scope: Scope::NrpaFamily,
+        });
     }
 }
 /// The static plugin instance, pushed into the registry under the `neural` feature.
@@ -442,6 +468,43 @@ mod tests {
         NEURAL_BIAS.biases(&st, &moves, &mut third);
         assert_eq!(first, third, "a fresh generation reproduces the same logits");
 
+        prior::arm(None);
+    }
+
+    /// Feature-space warm init reproduces the frozen prior: with θ₀ = scale·head, the
+    /// adaptive logit θ·φ equals the frozen logit scale·β up to a per-move-constant
+    /// (the head bias, which cancels in the softmax). So the move-to-move *differences*
+    /// must match — the property the whole "warm start = no regression at step 0" rests on.
+    #[test]
+    fn feat_warm_reproduces_frozen_prior() {
+        let _g = ARM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let reg = plugin::registry();
+        prior::install(prior::bundled(Variant::T5));
+        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(true));
+        let scale = reg.value_f64("neural-scale", DEFAULT_SCALE);
+
+        feat::restart(); // seeds this thread's warm θ₀ = scale·head
+        let st = GameState::new(Variant::T5);
+        let moves = legal_moves(&st);
+        let mut adaptive = Vec::new();
+        feat::logits(&st, &moves, &mut adaptive); // θ·φ per move
+
+        // Frozen prior logits (raw net), what θ·φ should reproduce up to a constant.
+        let p = prior::bundled(Variant::T5).unwrap();
+        let feats: Vec<Vec<f32>> = moves.iter().map(|m| features::encode(&st, m)).collect();
+        let frozen = net::MovePrior::biases(&p, &feats);
+
+        // (θ·φ[i] − θ·φ[0]) must equal scale·(β[i] − β[0]) for every move.
+        for i in 1..moves.len() {
+            let lhs = adaptive[i] - adaptive[0];
+            let rhs = scale * (frozen[i] - frozen[0]);
+            assert!(
+                (lhs - rhs).abs() < 1e-2,
+                "warm θ·φ should track scale·frozen: move {i} {lhs} vs {rhs}"
+            );
+        }
+
+        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(false));
         prior::arm(None);
     }
 }

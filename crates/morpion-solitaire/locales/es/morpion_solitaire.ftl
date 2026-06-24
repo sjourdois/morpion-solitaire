@@ -154,3 +154,7 @@ prior-status-error = Error: { $error }
 algo-puct = PUCT
 opt-c-puct = Exploración PUCT (c)
 opt-c-puct-hint = Constante de exploración PUCT — más alto explora más. Predeterminado 1.5.
+opt-feat-adapt = NRPA espacio-features
+opt-feat-adapt-hint = Adapta una cabeza sobre las features congeladas de la red en línea (φ-B) en vez de un sesgo fijo. Necesita un prior. Experimental.
+opt-feat-alpha = Paso espacio-features (α_θ)
+opt-feat-alpha-hint = Tamaño de paso de la cabeza para NRPA espacio-features. Predeterminado 0.1. Solo si está activo.

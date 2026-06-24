@@ -154,3 +154,7 @@ prior-status-error = Fout: { $error }
 algo-puct = PUCT
 opt-c-puct = PUCT-exploratie (c)
 opt-c-puct-hint = PUCT-exploratieconstante — hoger verkent meer. Standaard 1.5.
+opt-feat-adapt = Feature-ruimte-NRPA
+opt-feat-adapt-hint = Past online een kop aan over de bevroren netwerk-features (φ-B) in plaats van een vaste prior-bias. Vereist een prior. Experimenteel.
+opt-feat-alpha = Feature-ruimte-stap (α_θ)
+opt-feat-alpha-hint = Stapgrootte van de kop voor feature-ruimte-NRPA. Standaard 0.1. Alleen indien actief.

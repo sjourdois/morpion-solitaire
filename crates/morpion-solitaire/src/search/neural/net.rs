@@ -16,7 +16,8 @@
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{linear, Linear, Module, VarBuilder, VarMap};
 
-use super::features::FEATURE_LEN;
+use super::features::{PatchKey, FEATURE_LEN};
+use crate::game::{moves::Move, state::GameState};
 
 /// Hidden width `h`. Fixed at 64 — the width the bundled prior was trained at, and the
 /// only one shipped. A loaded model's shapes must match (the safetensors encode it).
@@ -30,6 +31,22 @@ pub trait MovePrior {
     /// One bias per candidate, in the order given. Higher ⇒ more preferred. Each
     /// `features[i]` is a [`FEATURE_LEN`]-long vector from [`super::features::encode`].
     fn biases(&self, features: &[Vec<f32>]) -> Vec<f64>;
+}
+
+/// A pluggable source of per-move feature vectors `φ(s,m)` for feature-space NRPA
+/// (`docs/feature-space-nrpa.md`): the adapt rule `θ += α_θ(φ_chosen − Σ p φ)` is
+/// written against this trait, so only *how φ is produced* varies. [`NeuralPrior`]'s
+/// impl returns the frozen net's penultimate activation over the move's local patch.
+pub trait FeatureSource: Send + Sync {
+    /// Feature dimension `d` (= |θ|).
+    fn feat_dim(&self) -> usize;
+    /// Warm-start `θ₀` reproducing this source's own prior logit at step 0
+    /// (`scale·head` for the net); zeros ≡ cold. Length must be [`feat_dim`](Self::feat_dim).
+    fn warm_theta(&self, scale: f64) -> Vec<f64>;
+    /// A move's cache key plus the raw model input run on a cache miss.
+    fn key_and_input(&self, scratch: &GameState, mv: &Move) -> (PatchKey, Vec<f32>);
+    /// Run the model on a batch of miss inputs → one `φ` each (length [`feat_dim`](Self::feat_dim)).
+    fn compute_features(&self, inputs: &[Vec<f32>]) -> Vec<Vec<f32>>;
 }
 
 /// The MLP move-scorer.
@@ -49,12 +66,26 @@ impl PolicyNet {
         })
     }
 
+    /// Forward `[N, FEATURE_LEN]` → `[N, h]`: the **penultimate** activation (after
+    /// `l2.relu`, before the head `l3`). This is the feature map `φ(s,m)` that
+    /// feature-space NRPA adapts a linear head `θ` over; by construction
+    /// `l3(forward_features(x))` equals [`forward`](Self::forward).
+    pub fn forward_features(&self, x: &Tensor) -> Result<Tensor> {
+        let x = self.l1.forward(x)?.relu()?;
+        self.l2.forward(&x)?.relu() // [N, h]
+    }
+
     /// Forward `[N, FEATURE_LEN]` → `[N]`: one logit per input move.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = self.l1.forward(x)?.relu()?;
-        let x = self.l2.forward(&x)?.relu()?; // [N, h]
+        let x = self.forward_features(x)?; // [N, h]
         let x = self.l3.forward(&x)?; // [N, 1]
         x.squeeze(1) // [N]
+    }
+
+    /// The output head `l3` (a `[1, h]` weight). Feature-space NRPA reads its weight to
+    /// warm-start `θ₀ = scale·l3.weight`, so `θ₀·φ` reproduces the frozen prior's logit.
+    pub fn head(&self) -> &Linear {
+        &self.l3
     }
 }
 
@@ -115,6 +146,60 @@ impl NeuralPrior {
         }
         let x = self.stack(features)?;
         self.net.forward(&x)?.to_vec1::<f32>()
+    }
+
+    /// Penultimate feature maps `φ(s,m)` for a position's candidate moves: one `[h]`
+    /// vector per move (the frozen `l1,l2` activation). Feature-space NRPA caches these
+    /// per local pattern and adapts a head `θ` over them; the net stays frozen.
+    fn penult(&self, features: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
+        if features.is_empty() {
+            return Ok(Vec::new());
+        }
+        let x = self.stack(features)?;
+        self.net.forward_features(&x)?.to_vec2::<f32>() // [N, h]
+    }
+
+    /// The head weight `l3.weight` flattened to `[h]` (f64). `θ₀ = scale·head_weight`
+    /// makes `θ·φ` reproduce the frozen prior's contribution exactly.
+    fn head_weight(&self) -> Vec<f64> {
+        match self
+            .net
+            .head()
+            .weight()
+            .flatten_all()
+            .and_then(|t| t.to_vec1::<f32>())
+        {
+            Ok(w) => w.into_iter().map(|x| x as f64).collect(),
+            Err(e) => {
+                log::error!("head_weight read failed: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Hidden width `h`, read from `l3.weight`'s `[1, h]` shape (a loaded model carries
+    /// its own width).
+    fn width(&self) -> usize {
+        self.net.head().weight().dims().get(1).copied().unwrap_or(0)
+    }
+}
+
+/// The default φ source: the frozen net's penultimate over the move's local patch.
+impl FeatureSource for NeuralPrior {
+    fn feat_dim(&self) -> usize {
+        self.width()
+    }
+    fn warm_theta(&self, scale: f64) -> Vec<f64> {
+        self.head_weight().into_iter().map(|w| w * scale).collect()
+    }
+    fn key_and_input(&self, scratch: &GameState, mv: &Move) -> (PatchKey, Vec<f32>) {
+        super::features::encode_keyed(scratch, mv)
+    }
+    fn compute_features(&self, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        self.penult(inputs).unwrap_or_else(|e| {
+            log::error!("feat penult inference failed: {e}");
+            Vec::new()
+        })
     }
 }
 

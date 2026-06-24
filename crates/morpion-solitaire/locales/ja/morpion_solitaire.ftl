@@ -154,3 +154,7 @@ prior-status-error = エラー: { $error }
 algo-puct = PUCT
 opt-c-puct = PUCT 探索 (c)
 opt-c-puct-hint = PUCT 探索定数 — 大きいほど探索的。既定 1.5。
+opt-feat-adapt = 特徴空間 NRPA
+opt-feat-adapt-hint = 固定の事前バイアスの代わりに、ネットの凍結特徴上のヘッドをオンライン適応（φ-B）。事前分布が必要。実験的。
+opt-feat-alpha = 特徴空間ステップ (α_θ)
+opt-feat-alpha-hint = 特徴空間 NRPA のヘッドのステップ幅。既定 0.1。有効時のみ。
