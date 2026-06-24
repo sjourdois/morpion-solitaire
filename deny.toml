@@ -9,6 +9,11 @@ ignore = [
     # transitive dependency of i18n-embed-fl (no vulnerability, and no safe
     # upgrade exists yet). Revisit when i18n-embed drops it.
     { id = "RUSTSEC-2026-0173", reason = "unmaintained build-time transitive dep of i18n-embed-fl; no fix available yet" },
+    # paste is archived/unmaintained (no vulnerability). It is a transitive
+    # dependency of candle (gemm/tokenizers) pulled in only by the optional,
+    # native-only `neural` feature; no safe upgrade exists upstream yet.
+    # Revisit when candle's matrix stack drops paste.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained transitive dep of candle (neural feature only); no fix available yet" },
 ]
 
 [licenses]
