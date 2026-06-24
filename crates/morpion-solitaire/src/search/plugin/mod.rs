@@ -111,15 +111,23 @@ pub struct Registry {
     /// default as the plugin registers; overwritten by the CLI/GUI before a search.
     values: Mutex<HashMap<&'static str, OptionValue>>,
     /// Method ids / option keys contributed by an [`experimental`](Plugin::experimental)
-    /// plugin. Tagged in the build loop (by diffing what each plugin registers), then
-    /// read by the CLI/GUI to hide lab-only surface unless `--experimental` is set. The
-    /// plugins still register — the engine is built once; this is a visibility gate only.
+    /// plugin. Tagged by [`add_method`](Self::add_method)/[`add_option`](Self::add_option)
+    /// as the plugin registers (see `building_experimental`), then read by the CLI/GUI to
+    /// hide lab-only surface unless `--experimental` is set. The plugins still register —
+    /// the engine is built once; this is a visibility gate only.
     experimental_methods: HashSet<&'static str>,
     experimental_options: HashSet<&'static str>,
+    /// Set by the build loop to the currently-registering plugin's `experimental()` flag,
+    /// so `add_method`/`add_option` can tag what it contributes directly — robust to a
+    /// plugin's registration order, unlike diffing the vec lengths around `register()`.
+    building_experimental: bool,
 }
 
 impl Registry {
     pub fn add_method(&mut self, m: &'static dyn Method) {
+        if self.building_experimental {
+            self.experimental_methods.insert(m.id());
+        }
         self.methods.push(m);
     }
     #[allow(dead_code)] // used by the neural plugin (feature-gated)
@@ -141,6 +149,9 @@ impl Registry {
             .get_mut()
             .unwrap()
             .insert(spec.key, spec.kind.default_value());
+        if self.building_experimental {
+            self.experimental_options.insert(spec.key);
+        }
         self.options.push(spec);
     }
     /// All option specs contributed by registered plugins (for CLI/GUI rendering).
@@ -491,18 +502,11 @@ pub fn registry() -> &'static Registry {
             let mut still: Vec<&'static dyn Plugin> = Vec::new();
             for p in remaining {
                 if p.deps().iter().all(|d| done.contains(d)) {
-                    // Tag what an experimental plugin contributes by diffing the
-                    // method/option lists across its register() call.
-                    let (m0, o0) = (reg.methods.len(), reg.options.len());
+                    // Tag whatever this plugin registers as experimental (or not) at the
+                    // point of add_method/add_option — order-independent, no len-diffing.
+                    reg.building_experimental = p.experimental();
                     p.register(&mut reg);
-                    if p.experimental() {
-                        let new_methods: Vec<&'static str> =
-                            reg.methods[m0..].iter().map(|m| m.id()).collect();
-                        let new_options: Vec<&'static str> =
-                            reg.options[o0..].iter().map(|o| o.key).collect();
-                        reg.experimental_methods.extend(new_methods);
-                        reg.experimental_options.extend(new_options);
-                    }
+                    reg.building_experimental = false;
                     done.insert(p.id());
                     progressed = true;
                 } else {

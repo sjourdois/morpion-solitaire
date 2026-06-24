@@ -928,6 +928,50 @@ fn nrpa(
     best
 }
 
+/// Fill `out` with the per-move softmax weights `exp(logit/τ)` for one NRPA step — the
+/// single source of the logit formula, shared by [`playout`] and [`adapt`] (which must
+/// sample identically). `wcode(i, mv)` returns the move's policy-table weight (`None` =
+/// code unseen); the caller supplies its coding strategy (coded on the fly in playout,
+/// from the precomputed `codes` in adapt). The branch order matches the engine's:
+/// feature-space θ·φ (in `feat`) takes precedence, else the neural bias (`bias`, +β when
+/// `prior`), else the cold/β path (an unseen code is `exp(0)=1`, and β is skipped when
+/// `!prior` — where it is 0 anyway — to avoid the call).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn fill_step_weights(
+    out: &mut Vec<f64>,
+    moves: &[Move],
+    scratch: &GameState,
+    inv_temp: f64,
+    prior: bool,
+    mut wcode: impl FnMut(usize, &Move) -> Option<f64>,
+    feat: Option<(&[f64], bool)>,
+    bias: Option<&[f64]>,
+) {
+    out.clear();
+    if let Some((fbuf, feat_table)) = feat {
+        // φ-A (head-only) uses θ·φ alone; φ-B adds the one-hot table value.
+        out.extend(moves.iter().enumerate().map(|(i, mv)| {
+            let w = if feat_table { wcode(i, mv).unwrap_or(0.0) } else { 0.0 };
+            ((w + fbuf[i]) * inv_temp).exp()
+        }));
+    } else if let Some(nbuf) = bias {
+        out.extend(moves.iter().enumerate().map(|(i, mv)| {
+            let nb = nbuf.get(i).copied().unwrap_or(0.0);
+            let w = wcode(i, mv).unwrap_or(0.0);
+            let logit = if prior { w + nb + beta(scratch, mv.pos) } else { w + nb };
+            (logit * inv_temp).exp()
+        }));
+    } else {
+        out.extend(moves.iter().enumerate().map(|(i, mv)| match wcode(i, mv) {
+            Some(w) if prior => ((w + beta(scratch, mv.pos)) * inv_temp).exp(),
+            Some(w) => (w * inv_temp).exp(),
+            None if !prior => 1.0,
+            None => (beta(scratch, mv.pos) * inv_temp).exp(),
+        }));
+    }
+}
+
 fn playout(
     policy: &Policy,
     scratch: &mut GameState,
@@ -981,67 +1025,36 @@ fn playout(
         // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
         // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
         let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
-        weights.clear();
-        // Feature-space path (φ-B): logit = (w[code] + θ·φ)/τ. Takes precedence.
+        // Per-move auxiliary buffers: feature-space θ·φ (takes precedence), else the
+        // neural bias. Then the shared logit builder fills `weights`.
         #[cfg(feature = "neural")]
-        let used_feat = if feat {
+        let feat_arg = if feat {
             crate::search::neural::feat::logits(scratch, &moves, &mut fbuf);
-            weights.extend(moves.iter().enumerate().map(|(i, mv)| {
-                // φ-A (head-only) uses θ·φ alone; φ-B adds the one-hot table value.
-                let w = if feat_table {
-                    policy
-                        .get(&move_code(&coder, scratch, mv, local))
-                        .copied()
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                ((w + fbuf[i]) * inv_temp).exp()
-            }));
-            true
+            Some((fbuf.as_slice(), feat_table))
         } else {
-            false
+            None
         };
         #[cfg(not(feature = "neural"))]
-        let used_feat = false;
-        if used_feat {
-            // weights already built by the feature-space path
+        let feat_arg: Option<(&[f64], bool)> = None;
+        let bias_arg = if feat_arg.is_some() {
+            None
         } else if let Some(b) = bias {
-            // A move-bias modifier (neural prior) is active: add its per-move
-            // log-space bias (and the GNRPA/corpus β when that's also on) to each
-            // logit. One batched call per step.
             nbuf.clear();
             b.biases(scratch, &moves, &mut nbuf);
-            weights.extend(moves.iter().enumerate().map(|(i, mv)| {
-                let nb = nbuf.get(i).copied().unwrap_or(0.0);
-                let w = policy
-                    .get(&move_code(&coder, scratch, mv, local))
-                    .copied()
-                    .unwrap_or(0.0);
-                let logit = if prior {
-                    w + nb + beta(scratch, mv.pos)
-                } else {
-                    w + nb
-                };
-                (logit * inv_temp).exp()
-            }));
-        } else if !prior {
-            // Cold fast path (no GNRPA/corpus bias): weight is exp(w/τ) for a seen
-            // code, exp(0)=1 for an unseen one — no `beta` per move.
-            weights.extend(moves.iter().map(|mv| {
-                match policy.get(&move_code(&coder, scratch, mv, local)) {
-                    Some(&w) => (w * inv_temp).exp(),
-                    None => 1.0,
-                }
-            }));
+            Some(nbuf.as_slice())
         } else {
-            weights.extend(moves.iter().map(|mv| {
-                match policy.get(&move_code(&coder, scratch, mv, local)) {
-                    Some(&w) => ((w + beta(scratch, mv.pos)) * inv_temp).exp(),
-                    None => (beta(scratch, mv.pos) * inv_temp).exp(),
-                }
-            }));
-        }
+            None
+        };
+        fill_step_weights(
+            &mut weights,
+            &moves,
+            scratch,
+            inv_temp,
+            prior,
+            |_, mv| policy.get(&move_code(&coder, scratch, mv, local)).copied(),
+            feat_arg,
+            bias_arg,
+        );
         let total: f64 = weights.iter().sum();
         let mut r = rng.random::<f64>() * total;
         let mut chosen = moves.len() - 1;
@@ -1146,55 +1159,40 @@ fn adapt(
         let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
         codes.clear();
         codes.extend(moves.iter().map(|m| move_code(&coder, scratch, m, local)));
-        exps.clear();
-        // Feature-space path (φ-B): logit = (w[code] + θ·φ)/τ. Takes precedence.
+        // Per-move auxiliary buffers (feature-space θ·φ, else the neural bias), then the
+        // shared logit builder fills `exps` — identical softmax to `playout`, reading the
+        // precomputed `codes` for the policy weight.
         #[cfg(feature = "neural")]
-        let used_feat = if feat {
+        let feat_arg = if feat {
             crate::search::neural::feat::logits(scratch, &moves, &mut fbuf);
-            exps.extend(codes.iter().enumerate().map(|(i, code)| {
-                // φ-A (head-only) uses θ·φ alone; φ-B adds the one-hot table value.
-                let w = if feat_table {
-                    policy.get(code).copied().unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                ((w + fbuf[i]) * inv_temp).exp()
-            }));
-            true
+            Some((fbuf.as_slice(), feat_table))
         } else {
-            false
+            None
         };
         #[cfg(not(feature = "neural"))]
-        let used_feat = false;
-        if used_feat {
-            // exps already built by the feature-space path
+        let feat_arg: Option<(&[f64], bool)> = None;
+        let bias_arg = if feat_arg.is_some() {
+            None
         } else if let Some(b) = bias {
-            // Bias modifier (neural prior) active: same softmax as `playout`, with the
-            // per-move neural bias (and β when GNRPA/corpus is also on) in each logit.
             nbuf.clear();
             b.biases(scratch, &moves, &mut nbuf);
-            exps.extend(codes.iter().zip(&moves).enumerate().map(|(i, (code, m))| {
-                let nb = nbuf.get(i).copied().unwrap_or(0.0);
-                let w = policy.get(code).copied().unwrap_or(0.0);
-                let logit = if prior {
-                    w + nb + beta(scratch, m.pos)
-                } else {
-                    w + nb
-                };
-                (logit * inv_temp).exp()
-            }));
+            Some(nbuf.as_slice())
         } else {
-            exps.extend(
-                codes
-                    .iter()
-                    .zip(&moves)
-                    .map(|(code, m)| match policy.get(code) {
-                        Some(&w) => ((w + beta(scratch, m.pos)) * inv_temp).exp(),
-                        None if !prior => 1.0,
-                        None => (beta(scratch, m.pos) * inv_temp).exp(),
-                    }),
-            );
-        }
+            None
+        };
+        // Whether the feature-space path is active (gates the table update + θ adapt below).
+        #[cfg(feature = "neural")]
+        let used_feat = feat_arg.is_some();
+        fill_step_weights(
+            &mut exps,
+            &moves,
+            scratch,
+            inv_temp,
+            prior,
+            |i, _| policy.get(&codes[i]).copied(),
+            feat_arg,
+            bias_arg,
+        );
         let z: f64 = exps.iter().sum();
 
         // chosen += α ; each legal -= α · P(move). Optionally clamp the touched
