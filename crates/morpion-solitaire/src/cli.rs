@@ -103,6 +103,10 @@ struct SearchArgs {
     /// Beam width.
     #[arg(long, default_value_t = 64)]
     width: usize,
+    /// Perturbation genetic-crossover rate (0 = off). Only used by
+    /// `--algo perturbation`.
+    #[arg(long, default_value_t = 0.0)]
+    crossover: f64,
     /// Warm-start NRPA from a game file (policy seed).
     #[arg(long, value_name = "FILE")]
     warm: Option<PathBuf>,
@@ -404,7 +408,12 @@ fn spawn_search(
     match a.algo {
         AlgoArg::Perturbation => {
             let seed = from_state.map(|st| st.history).unwrap_or_default();
-            std::thread::spawn(move || nrpa::run_perturbation(s, level, seed, variant));
+            let crossover = a.crossover;
+            std::thread::spawn(move || {
+                // The crossover rate is a per-thread override; set it on the loop's thread.
+                nrpa::set_crossover_override(crossover);
+                nrpa::run_perturbation(s, level, seed, variant);
+            });
         }
         AlgoArg::Systematic => {
             let initial = from_state.unwrap_or_else(|| GameState::new(variant));
