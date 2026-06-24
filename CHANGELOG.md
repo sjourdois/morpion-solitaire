@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — unreleased
+## [0.2.0] — 2026-06-24
 
 ### Added
 
@@ -116,6 +116,7 @@ the partly-published release left the `v0.1.3` tag unusable for a GitHub Release
 - Touch input on phones and tablets (the canvas treated taps as scroll/zoom), and
   the controls panel is now usable on narrow screens.
 
+[0.2.0]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.2.0
 [0.1.5]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sjourdois/morpion-solitaire/releases/tag/v0.1.3
