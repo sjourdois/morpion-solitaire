@@ -1297,10 +1297,21 @@ impl MorpionApp {
             SearchAlgo::Beam => "beam",
             SearchAlgo::Nrpa | SearchAlgo::Perturbation if seeded => "nrpa-seeded",
             SearchAlgo::Nrpa | SearchAlgo::Perturbation => "nrpa",
+            #[cfg(feature = "neural")]
+            SearchAlgo::Puct => "puct",
         };
         self.method_desc = match algo {
             SearchAlgo::Systematic => "systematic (exhaustive)".to_owned(),
             SearchAlgo::Beam => "beam".to_owned(),
+            #[cfg(feature = "neural")]
+            SearchAlgo::Puct => {
+                let policy = if crate::search::neural::is_armed() {
+                    "neural"
+                } else {
+                    "uniform"
+                };
+                format!("puct policy={policy}")
+            }
             SearchAlgo::Perturbation => {
                 format!(
                     "perturbation L{level} warm-from={seed_len} warm={}",
@@ -1344,6 +1355,8 @@ impl MorpionApp {
             },
             SearchAlgo::Beam => beam::run(&initial, s2, 64),
             SearchAlgo::Perturbation => {} // native: handled above; wasm: not offered
+            #[cfg(feature = "neural")]
+            SearchAlgo::Puct => crate::search::neural::run_puct_armed(s2, variant),
         });
         self.search = Some(s);
     }
@@ -1405,6 +1418,8 @@ impl MorpionApp {
                 }
                 SearchAlgo::Nrpa => nrpa::save_checkpoint(self.selected_variant, s),
                 SearchAlgo::Beam => {}
+                #[cfg(feature = "neural")]
+                SearchAlgo::Puct => {} // no checkpoint (one in-memory tree)
             }
         }
         self.last_checkpoint = Instant::now();
@@ -1453,7 +1468,10 @@ impl MorpionApp {
 impl MorpionApp {
     /// Whether the chosen algorithm consumes the neural prior (the NRPA family).
     fn algo_uses_prior(&self) -> bool {
-        matches!(self.algo, SearchAlgo::Nrpa | SearchAlgo::Perturbation)
+        matches!(
+            self.algo,
+            SearchAlgo::Nrpa | SearchAlgo::Perturbation | SearchAlgo::Puct
+        )
     }
 
     /// A localized status line for the prior panel (empty when idle).
@@ -2293,6 +2311,8 @@ fn algo_tag(algo: SearchAlgo) -> &'static str {
         SearchAlgo::Nrpa => "nrpa",
         SearchAlgo::Beam => "beam",
         SearchAlgo::Perturbation => "perturbation",
+        #[cfg(feature = "neural")]
+        SearchAlgo::Puct => "puct",
     }
 }
 

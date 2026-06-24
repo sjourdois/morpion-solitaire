@@ -151,3 +151,6 @@ btn-cancel-training = 学習を中止
 prior-status-training = 事前分布を学習中…
 prior-status-ready = 事前分布の準備完了 ✓
 prior-status-error = エラー: { $error }
+algo-puct = PUCT
+opt-c-puct = PUCT 探索 (c)
+opt-c-puct-hint = PUCT 探索定数 — 大きいほど探索的。既定 1.5。

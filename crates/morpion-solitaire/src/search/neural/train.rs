@@ -99,6 +99,69 @@ pub fn train(samples: &[StateSample], cfg: &TrainConfig, device: Device) -> Resu
     Ok(NeuralPrior::new(net, varmap, device))
 }
 
+/// Train the **value** net by regression (mini-batched MSE) on `samples`. Value
+/// features are fixed-width, so unlike the policy net this batches. Returns the net
+/// wrapped with its `VarMap` (kept alive).
+pub fn train_value(
+    samples: &[super::dataset::ValueSample],
+    cfg: &TrainConfig,
+    batch: usize,
+    device: Device,
+) -> Result<(VarMap, super::net::ValueNet)> {
+    use super::position::VALUE_LEN;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
+    let net = super::net::ValueNet::new(vb)?;
+    let mut opt = AdamW::new(
+        varmap.all_vars(),
+        ParamsAdamW {
+            lr: cfg.lr,
+            ..Default::default()
+        },
+    )?;
+    for _epoch in 0..cfg.epochs {
+        for chunk in samples.chunks(batch.max(1)) {
+            let b = chunk.len();
+            let flat: Vec<f32> = chunk.iter().flat_map(|s| s.features.iter().copied()).collect();
+            let x = Tensor::from_vec(flat, (b, VALUE_LEN), &device)?;
+            let tgt = Tensor::from_vec(chunk.iter().map(|s| s.target).collect::<Vec<_>>(), b, &device)?;
+            let loss = net.forward(&x)?.sub(&tgt)?.sqr()?.mean_all()?;
+            opt.backward_step(&loss)?;
+        }
+    }
+    Ok((varmap, net))
+}
+
+/// Mean-squared error of the value net over `samples` (normalised units).
+pub fn value_mse(
+    net: &super::net::ValueNet,
+    samples: &[super::dataset::ValueSample],
+    device: &Device,
+) -> f64 {
+    use super::position::VALUE_LEN;
+    let mut se = 0.0;
+    let mut n = 0usize;
+    for chunk in samples.chunks(512) {
+        let b = chunk.len();
+        let flat: Vec<f32> = chunk.iter().flat_map(|s| s.features.iter().copied()).collect();
+        let Ok(x) = Tensor::from_vec(flat, (b, VALUE_LEN), device) else {
+            continue;
+        };
+        let Ok(pred) = net.forward(&x).and_then(|t| t.to_vec1::<f32>()) else {
+            continue;
+        };
+        for (p, s) in pred.iter().zip(chunk) {
+            se += (p - s.target).powi(2) as f64;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        se / n as f64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -688,6 +688,9 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
     // depending on nrpa. Absent ⇒ no bias hook, no --neural-scale option.
     #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
     v.push(&crate::search::neural::NEURAL_PLUGIN);
+    // PUCT method (policy+value tree search), same feature gate.
+    #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
+    v.push(&crate::search::neural::PUCT_PLUGIN);
     v
 }
 

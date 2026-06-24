@@ -71,6 +71,10 @@ enum AlgoArg {
     Systematic,
     Perturbation,
     Beam,
+    /// PUCT (policy+value tree search) — needs the neural policy prior; arm one with
+    /// `--prior` (else it runs as uniform rollout MCTS).
+    #[cfg(feature = "neural")]
+    Puct,
 }
 
 impl AlgoArg {
@@ -81,6 +85,8 @@ impl AlgoArg {
             AlgoArg::Systematic => "systematic",
             AlgoArg::Perturbation => "perturbation",
             AlgoArg::Beam => "beam",
+            #[cfg(feature = "neural")]
+            AlgoArg::Puct => "puct",
         }
     }
 }
@@ -923,6 +929,8 @@ fn drive_checkpoint(algo: AlgoArg, variant: Variant, search: &Arc<SearchState>) 
         }
         AlgoArg::Nrpa => nrpa::save_checkpoint(variant, search),
         AlgoArg::Beam => {}
+        #[cfg(feature = "neural")]
+        AlgoArg::Puct => {}
     }
 }
 

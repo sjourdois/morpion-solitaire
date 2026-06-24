@@ -13,6 +13,10 @@ pub enum SearchAlgo {
     /// Perturbation (large-neighbourhood) search around the loaded game. Native
     /// only (it drives time-bounded inner NRPA searches via OS threads).
     Perturbation,
+    /// PUCT (policy+value tree search), guided by the neural prior. Feature `neural`,
+    /// native only.
+    #[cfg(feature = "neural")]
+    Puct,
 }
 
 /// Where a search begins — replaces the old warm-start + reset-to-initial
@@ -35,6 +39,9 @@ pub fn start_points_for(algo: SearchAlgo) -> &'static [StartPoint] {
         SearchAlgo::Nrpa => &[StartPoint::Empty, StartPoint::Seeded, StartPoint::Continue],
         SearchAlgo::Systematic | SearchAlgo::Beam => &[StartPoint::Empty, StartPoint::Continue],
         SearchAlgo::Perturbation => &[],
+        // PUCT always grows its tree from the empty cross.
+        #[cfg(feature = "neural")]
+        SearchAlgo::Puct => &[StartPoint::Empty],
     }
 }
 
@@ -415,6 +422,8 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
             SearchAlgo::Beam => fl!(l, "algo-beam"),
             SearchAlgo::Systematic => fl!(l, "algo-systematic"),
             SearchAlgo::Perturbation => fl!(l, "algo-perturbation"),
+            #[cfg(feature = "neural")]
+            SearchAlgo::Puct => crate::i18n::tr("algo-puct"),
         };
         ui.add_enabled_ui(!input.search_running, |ui| {
             // Ordered simplest/exact → most sophisticated heuristic, matching the
@@ -423,6 +432,11 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
             // Perturbation is native-only (it uses OS threads).
             if input.checkpoint_supported {
                 algos.push(SearchAlgo::Perturbation);
+            }
+            // PUCT (feature `neural`, native): policy+value tree search.
+            #[cfg(feature = "neural")]
+            if input.checkpoint_supported {
+                algos.push(SearchAlgo::Puct);
             }
             egui::ComboBox::from_id_salt("algo")
                 .selected_text(algo_label(input.algo))
@@ -657,6 +671,8 @@ fn algo_id(a: SearchAlgo) -> &'static str {
         SearchAlgo::Beam => "beam",
         SearchAlgo::Systematic => "systematic",
         SearchAlgo::Perturbation => "perturbation",
+        #[cfg(feature = "neural")]
+        SearchAlgo::Puct => "puct",
     }
 }
 

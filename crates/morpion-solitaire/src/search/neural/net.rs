@@ -132,6 +132,74 @@ impl MovePrior for NeuralPrior {
     }
 }
 
+/// The value net: a whole-position scorer (policy+value / PUCT line). Input is a
+/// [`super::position::VALUE_LEN`] vector (occupancy crop + scalars); output is a
+/// scalar in (0, 1) = predicted final game length / 200. Same MLP shape as
+/// [`PolicyNet`] but with a sigmoid head; value features are fixed-width so value
+/// training mini-batches.
+pub struct ValueNet {
+    l1: Linear,
+    l2: Linear,
+    l3: Linear,
+}
+
+impl ValueNet {
+    pub fn new(vb: VarBuilder) -> Result<Self> {
+        Ok(Self {
+            l1: linear(super::position::VALUE_LEN, HIDDEN, vb.pp("v1"))?,
+            l2: linear(HIDDEN, HIDDEN, vb.pp("v2"))?,
+            l3: linear(HIDDEN, 1, vb.pp("v3"))?,
+        })
+    }
+
+    /// Forward `[N, VALUE_LEN]` → `[N]`: predicted normalised length in (0, 1).
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = self.l1.forward(x)?.relu()?;
+        let x = self.l2.forward(&x)?.relu()?;
+        let x = candle_nn::ops::sigmoid(&self.l3.forward(&x)?)?; // [N, 1]
+        x.squeeze(1)
+    }
+}
+
+/// A trained [`ValueNet`] ready to score positions (PUCT leaf eval). Inference runs
+/// on CPU (one position at a time in the search), like the policy prior.
+pub struct ValuePredictor {
+    net: ValueNet,
+    #[allow(dead_code)]
+    varmap: VarMap,
+    device: Device,
+}
+
+impl ValuePredictor {
+    /// Wrap a freshly trained net + its varmap.
+    pub fn new(net: ValueNet, varmap: VarMap, device: Device) -> Self {
+        Self { net, varmap, device }
+    }
+
+    /// Save / load the value weights (safetensors), like the policy net.
+    pub fn save(&self, path: &str) -> Result<()> {
+        self.varmap.save(path)
+    }
+    pub fn load(path: &str, device: Device) -> Result<Self> {
+        let mut varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
+        let net = ValueNet::new(vb)?;
+        varmap.load(path)?;
+        Ok(Self { net, varmap, device })
+    }
+
+    /// Estimated value (normalised final length, ~[0,1]) of a position. Returns a
+    /// neutral 0.5 on the (unexpected) inference error so the search never breaks.
+    pub fn value(&self, state: &crate::game::state::GameState) -> f32 {
+        let f = super::position::encode_value_natural(state);
+        let run = || -> Result<f32> {
+            let x = Tensor::from_vec(f, (1, super::position::VALUE_LEN), &self.device)?;
+            Ok(self.net.forward(&x)?.to_vec1::<f32>()?[0])
+        };
+        run().unwrap_or(0.5)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

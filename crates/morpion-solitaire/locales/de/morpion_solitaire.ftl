@@ -151,3 +151,6 @@ btn-cancel-training = Training abbrechen
 prior-status-training = Prior wird trainiert…
 prior-status-ready = Prior bereit ✓
 prior-status-error = Fehler: { $error }
+algo-puct = PUCT
+opt-c-puct = PUCT-Exploration (c)
+opt-c-puct-hint = PUCT-Explorationskonstante — höher exploriert mehr. Standard 1.5.

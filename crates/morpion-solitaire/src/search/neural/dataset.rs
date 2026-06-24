@@ -128,6 +128,83 @@ pub fn augmented_samples_from_games(variant: Variant, games: &[Vec<Move>]) -> Ve
     out
 }
 
+/// One value-training example: a whole-position encoding and its value target (the
+/// game's final length, normalised) — for the policy+value / PUCT line.
+#[derive(Debug, Clone)]
+pub struct ValueSample {
+    pub features: Vec<f32>,
+    pub target: f32,
+}
+
+/// Replay every record game and emit a [`ValueSample`] per position (every D4
+/// orientation when `augment`), labelled with the game's final length. All feature
+/// vectors are the same width, so value training can mini-batch.
+pub fn value_samples_from_corpus(variant: Variant, augment: bool) -> Vec<ValueSample> {
+    use super::position::{encode_value, value_target};
+    let orients = if augment { 0..8 } else { 0..1 };
+    let mut out = Vec::new();
+    for rec in morpion_solitaire_records::RECORDS.iter() {
+        let Ok(g) = crate::game::io::import_save(rec.2) else {
+            continue;
+        };
+        if g.variant != variant {
+            continue;
+        }
+        let target = value_target(g.history.len() as u32);
+        for t in orients.clone() {
+            let mut st = GameState::new(g.variant);
+            for &mv in &g.history {
+                out.push(ValueSample {
+                    features: encode_value(&st, t),
+                    target,
+                });
+                if !st.apply(mv) {
+                    break;
+                }
+            }
+            out.push(ValueSample {
+                features: encode_value(&st, t),
+                target,
+            });
+        }
+    }
+    out
+}
+
+/// Value samples from arbitrary games (e.g. self-play rollouts of varied length):
+/// every position labelled with its game's final length, optionally in all eight D4
+/// orientations. The varied-length data the value net needs to discriminate good
+/// from bad positions (the all-long record corpus can't teach that).
+pub fn value_samples_from_games(
+    variant: Variant,
+    games: &[Vec<Move>],
+    augment: bool,
+) -> Vec<ValueSample> {
+    use super::position::{encode_value, value_target};
+    let orients = if augment { 0..8 } else { 0..1 };
+    let mut out = Vec::new();
+    for g in games {
+        let target = value_target(g.len() as u32);
+        for t in orients.clone() {
+            let mut st = GameState::new(variant);
+            for &mv in g {
+                out.push(ValueSample {
+                    features: encode_value(&st, t),
+                    target,
+                });
+                if !st.apply(mv) {
+                    break;
+                }
+            }
+            out.push(ValueSample {
+                features: encode_value(&st, t),
+                target,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
