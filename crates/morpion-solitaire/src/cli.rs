@@ -63,6 +63,11 @@ enum Command {
     /// elite corpus it trained on); use it with `search --prior <FILE>`.
     #[cfg(feature = "neural")]
     TabulaRasa(TabulaRasaArgs),
+    /// Train a PUCT value net (feature `neural`): self-play length-varied games, label
+    /// each position by its game's final length, regress. Use the result with
+    /// `search --algo puct --value-net <FILE>`.
+    #[cfg(feature = "neural")]
+    TrainValue(TrainValueArgs),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -132,6 +137,12 @@ struct SearchArgs {
     #[cfg(feature = "neural")]
     #[arg(long, value_name = "FILE")]
     save_prior: Option<PathBuf>,
+    /// PUCT value net (feature `neural`): a safetensors file from `train-value`. With
+    /// it, `--algo puct` evaluates leaves by the net's position estimate instead of a
+    /// rollout (policy+value). Ignored by the other algorithms.
+    #[cfg(feature = "neural")]
+    #[arg(long, value_name = "FILE")]
+    value_net: Option<PathBuf>,
     /// Perturbation destroy-size lower bound K_min (default 8). `--algo perturbation`.
     #[arg(long, value_name = "K")]
     kmin: Option<usize>,
@@ -281,6 +292,24 @@ struct TabulaRasaArgs {
     save_corpus: Option<PathBuf>,
 }
 
+#[cfg(feature = "neural")]
+#[derive(Args)]
+struct TrainValueArgs {
+    /// Write the trained value net here (safetensors).
+    #[arg(long, short = 'o', value_name = "FILE")]
+    out: PathBuf,
+    /// Self-play games per temperature bucket (more = better length spread, slower).
+    #[arg(long, default_value_t = 200)]
+    games: usize,
+    /// Training epochs.
+    #[arg(long, default_value_t = 40)]
+    epochs: usize,
+    /// Policy prior guiding the long-game rollouts: `bundled`, a safetensors path, or
+    /// omitted (uniform rollouts — shorter games, less length spread).
+    #[arg(long, value_name = "bundled|FILE")]
+    prior: Option<String>,
+}
+
 #[derive(Args)]
 struct BenchArgs {
     /// Engine to measure.
@@ -385,6 +414,8 @@ fn run(cmd: Command, variant: Variant) -> Result<(), String> {
         Command::Bench(a) => cmd_bench(a, variant),
         #[cfg(feature = "neural")]
         Command::TabulaRasa(a) => cmd_tabula_rasa(a, variant),
+        #[cfg(feature = "neural")]
+        Command::TrainValue(a) => cmd_train_value(a, variant),
     }
 }
 
@@ -665,6 +696,15 @@ fn spawn_search(
         log::info!("neural prior armed ({spec})");
     }
 
+    // Arm the PUCT value net (--value-net): PUCT then evaluates leaves with the net.
+    #[cfg(feature = "neural")]
+    if let Some(vf) = &a.value_net {
+        let vp = crate::search::neural::load_value(&vf.to_string_lossy())
+            .map_err(|e| e.to_string())?;
+        crate::search::neural::install_value(Some(vp));
+        log::info!("value net armed ({})", vf.display());
+    }
+
     // clamp/alpha/symmetry/crossover are already in the registry's values map (applied
     // from the dynamic options in `apply_search_options`). The perturbation destroy
     // bounds remain typed nrpa overrides; set them before spawning.
@@ -911,6 +951,40 @@ fn cmd_tabula_rasa(a: TabulaRasaArgs, variant: Variant) -> Result<(), String> {
     }
     let best = corpus.iter().map(|g| g.len()).max().unwrap_or(0);
     eprintln!("done — best game {best} moves");
+    Ok(())
+}
+
+#[cfg(feature = "neural")]
+fn cmd_train_value(a: TrainValueArgs, variant: Variant) -> Result<(), String> {
+    use crate::search::neural::{prior, train_value_net};
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
+    // Optional policy prior to guide the long-game rollouts (better length spread).
+    let prior_obj = match a.prior.as_deref() {
+        None => None,
+        Some("bundled") => Some(
+            prior::bundled(variant)
+                .ok_or_else(|| format!("no bundled prior for {}", variant.name()))?,
+        ),
+        Some(path) => Some(prior::load(path).map_err(|e| e.to_string())?),
+    };
+
+    eprintln!(
+        "train-value {} — {} games/bucket × 4 buckets, {} epochs{}",
+        variant.name(),
+        a.games,
+        a.epochs,
+        if prior_obj.is_some() {
+            " (prior-guided)"
+        } else {
+            " (uniform)"
+        },
+    );
+
+    let vp = train_value_net(variant, prior_obj.as_ref(), a.games, a.epochs)
+        .map_err(|e| e.to_string())?;
+    vp.save(&a.out.to_string_lossy()).map_err(|e| e.to_string())?;
+    eprintln!("wrote value net: {}", a.out.display());
     Ok(())
 }
 
