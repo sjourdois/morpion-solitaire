@@ -1,5 +1,6 @@
 use super::board::Pos;
 use super::line::{Dir, Line};
+use super::line_index::lines_conflict;
 use super::rules::TouchMode;
 use super::state::GameState;
 use serde::{Deserialize, Serialize};
@@ -121,6 +122,96 @@ fn append_dir(state: &GameState, out: &mut Vec<Move>, min_y: i16, max_y: i16, di
     }
 }
 
+/// `forbid` parameter of the touch rule for `variant` (see `LineIndex::conflicts`).
+#[inline]
+fn forbid_of(variant: crate::game::rules::Variant) -> u8 {
+    let max_overlap = match variant.touch_mode {
+        TouchMode::Touching => 1,
+        TouchMode::Disjoint => 0,
+    };
+    variant.len() - 1 - max_overlap
+}
+
+/// Incrementally derive the legal-move set **after** playing `mv`, from the
+/// `parent` set (the set *before* `mv`; `state` already has `mv` applied). Playing
+/// `mv` adds one point and one line, so the set changes only locally: a parent move
+/// dies iff its empty cell is `mv.pos` or its line now conflicts with `mv.line`;
+/// new moves can only appear in windows through `mv.pos`. This replaces a full board
+/// rescan ([`legal_moves_into`], ~⅔ of a node's cost) per step in NRPA's forward
+/// playout/adapt walks. Mirrors the systematic search's incremental generator,
+/// Move-only (no trace-canonical flag). Debug-validated against the full scan.
+///
+/// `parent` and `out` may be the same logical set only via distinct buffers — the
+/// caller passes a separate `out` (cleared here) and swaps.
+pub fn child_legal_moves_into(out: &mut Vec<Move>, parent: &[Move], state: &GameState, mv: Move) {
+    let forbid = forbid_of(state.variant);
+    let nu = state.variant.len() as usize;
+    out.clear();
+    for &c in parent {
+        // A parent move conflicted with nothing drawn before `mv`, so it survives
+        // unless it collides with `mv.pos` or with `mv.line` itself.
+        if c.pos != mv.pos && !lines_conflict(&c.line, &mv.line, forbid) {
+            out.push(c);
+        }
+    }
+    add_windows_through(out, state, mv.pos, forbid, nu);
+
+    #[cfg(debug_assertions)]
+    {
+        use std::collections::HashSet;
+        let inc: HashSet<Move> = out.iter().copied().collect();
+        let full: HashSet<Move> = legal_moves(state).into_iter().collect();
+        debug_assert_eq!(out.len(), inc.len(), "duplicate in incremental legal set");
+        debug_assert_eq!(inc, full, "incremental legal set diverged from full scan");
+    }
+}
+
+/// Append every newly-legal move whose line passes through `p` (helper for
+/// [`child_legal_moves_into`]). Reads the `2·nu−1`-cell occupancy strip per
+/// direction once, then tests each of the `nu` windows containing `p` for exactly
+/// one empty cell. `p` is interior (board margin = n−1) so the strip stays on-grid;
+/// `n ≤ 5` ⇒ the strip fits a `u16`.
+fn add_windows_through(out: &mut Vec<Move>, state: &GameState, p: Pos, forbid: u8, nu: usize) {
+    use super::board::OFFSET;
+    let span = nu as i16 - 1; // p is at strip bit `span`
+    let full: u16 = (1 << nu) - 1;
+    let strip_mask: u16 = (1 << (2 * nu - 1)) - 1;
+    for dir in Dir::ALL {
+        let (dx, dy) = dir.delta();
+        let mut strip: u16 = 0;
+        if dy == 0 {
+            let gy = (p.1 + OFFSET) as usize;
+            let gx0 = (p.0 + OFFSET - span) as u32;
+            strip = (state.board.row(gy) >> gx0) as u16 & strip_mask;
+        } else {
+            for b in 0..(2 * nu - 1) {
+                let t = b as i16 - span;
+                if state.board.contains((p.0 + t * dx, p.1 + t * dy)) {
+                    strip |= 1 << b;
+                }
+            }
+        }
+        for j in 0..nu {
+            let lo = (nu - 1 - j) as u32;
+            let zeros = !strip & (full << lo);
+            if zeros == 0 || zeros & (zeros - 1) != 0 {
+                continue; // not exactly one empty cell
+            }
+            let empty_idx = (zeros.trailing_zeros() - lo) as u8;
+            let origin = (p.0 - j as i16 * dx, p.1 - j as i16 * dy);
+            let line = Line::new(origin, dir);
+            if state.line_index.conflicts(&line, forbid) {
+                continue;
+            }
+            let new_pos = (
+                origin.0 + empty_idx as i16 * dx,
+                origin.1 + empty_idx as i16 * dy,
+            );
+            out.push(Move::new(new_pos, line, empty_idx));
+        }
+    }
+}
+
 /// Full scalar reference (every direction), preserved as the oracle for the
 /// `legal_moves_matches_scalar` differential test and the generator bench.
 #[cfg(test)]
@@ -214,6 +305,34 @@ mod tests {
             state.apply(mv);
         }
         state
+    }
+
+    /// The incremental generator must match a full scan at every step of a real
+    /// game (set equality, no duplicates). The oracle for NRPA's hot-loop use.
+    #[test]
+    fn incremental_legal_matches_full_over_a_game() {
+        use std::collections::HashSet;
+        let mut st = GameState::new(Variant::T5);
+        let mut legal = legal_moves(&st);
+        let mut next = Vec::new();
+        for _ in 0..130 {
+            if legal.is_empty() {
+                break;
+            }
+            let mv = *legal
+                .iter()
+                .min_by_key(|m| {
+                    (m.pos.0, m.pos.1, m.line.origin.0, m.line.origin.1, m.line_pos)
+                })
+                .unwrap();
+            assert!(st.apply(mv));
+            child_legal_moves_into(&mut next, &legal, &st, mv);
+            let inc: HashSet<Move> = next.iter().copied().collect();
+            let full: HashSet<Move> = legal_moves(&st).into_iter().collect();
+            assert_eq!(inc.len(), next.len(), "duplicate after {mv:?}");
+            assert_eq!(inc, full, "incremental != full at move {}", st.history.len());
+            std::mem::swap(&mut legal, &mut next);
+        }
     }
 
     #[test]

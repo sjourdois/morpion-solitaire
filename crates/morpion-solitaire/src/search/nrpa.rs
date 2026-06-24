@@ -29,7 +29,7 @@ use super::{
 };
 use crate::game::{
     board::Pos,
-    moves::{legal_moves_into, Move},
+    moves::{child_legal_moves_into, legal_moves_into, Move},
     state::GameState,
 };
 
@@ -216,6 +216,16 @@ fn nrpa_local() -> bool {
             .map(|v| v == "1")
             .unwrap_or(false)
     })
+}
+
+/// Symmetry-invariant move coding (`NRPA_SYM`, default on). On: moves are coded in
+/// the board's canonical D4 frame and all 8 Zobrist hashes are maintained. Off
+/// (`NRPA_SYM=0`): the identity frame only (one hash), skipping the 8-hash
+/// maintenance — ~+16% throughput at neutral score, for cold record runs. Read once.
+fn nrpa_sym() -> bool {
+    use std::sync::OnceLock;
+    static S: OnceLock<bool> = OnceLock::new();
+    *S.get_or_init(|| std::env::var("NRPA_SYM").map(|v| v != "0").unwrap_or(true))
 }
 
 /// Island portfolio (`NRPA_PORTFOLIO=1`, default off): spread each island's
@@ -848,14 +858,18 @@ fn playout(
     let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
+    let sym_on = nrpa_sym();
     // Buffers reused across every step of this playout (cleared per step) so the
     // hottest loop in the search does no per-node heap allocation.
     let mut moves: Vec<Move> = Vec::new();
+    let mut moves_next: Vec<Move> = Vec::new();
     let mut weights: Vec<f64> = Vec::new();
 
+    // Incremental legal-move maintenance: one full scan at entry, then each step
+    // derives the next set from the played move instead of rescanning the board.
+    legal_moves_into(scratch, &mut moves);
     loop {
         search.nodes_explored.fetch_add(1, Ordering::Relaxed);
-        legal_moves_into(scratch, &mut moves);
         if moves.is_empty() {
             break;
         }
@@ -866,13 +880,23 @@ fn playout(
         // the transcendental for them — the common case while the policy is sparse.
         let coder = sym.move_coder();
         weights.clear();
-        weights.extend(moves.iter().map(|mv| {
-            match policy.get(&move_code(&coder, scratch, mv, local)) {
-                Some(&w) => ((w + beta(scratch, mv.pos)) * inv_temp).exp(),
-                None if !prior => 1.0,
-                None => (beta(scratch, mv.pos) * inv_temp).exp(),
-            }
-        }));
+        if !prior {
+            // Cold fast path (no GNRPA/corpus bias): weight is exp(w/τ) for a seen
+            // code, exp(0)=1 for an unseen one — no `beta` per move.
+            weights.extend(moves.iter().map(|mv| {
+                match policy.get(&move_code(&coder, scratch, mv, local)) {
+                    Some(&w) => (w * inv_temp).exp(),
+                    None => 1.0,
+                }
+            }));
+        } else {
+            weights.extend(moves.iter().map(|mv| {
+                match policy.get(&move_code(&coder, scratch, mv, local)) {
+                    Some(&w) => ((w + beta(scratch, mv.pos)) * inv_temp).exp(),
+                    None => (beta(scratch, mv.pos) * inv_temp).exp(),
+                }
+            }));
+        }
         let total: f64 = weights.iter().sum();
         let mut r = rng.random::<f64>() * total;
         let mut chosen = moves.len() - 1;
@@ -887,10 +911,17 @@ fn playout(
         // Stop cleanly if the move would overflow the fixed grid: the playout so
         // far is a valid game and gets recorded below; the flag tells the app to
         // save and alert (see board::GRID_OVERFLOW).
-        if !scratch.apply(moves[chosen]) {
+        let mv = moves[chosen];
+        if !scratch.apply(mv) {
             break;
         }
-        sym.toggle(moves[chosen].pos);
+        if sym_on {
+            sym.toggle(mv.pos);
+        } else {
+            sym.toggle_identity(mv.pos);
+        }
+        child_legal_moves_into(&mut moves_next, &moves, scratch, mv);
+        std::mem::swap(&mut moves, &mut moves_next);
     }
 
     // The global best is the FULL game from the cross (initial prefix included);
@@ -927,6 +958,7 @@ fn adapt(
     let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
+    let sym_on = nrpa_sym();
     // Per-island portfolio clamp if set, else the global default.
     let clamp = match CLAMP_OVERRIDE.with(|c| c.get()) {
         Some(c) => Some(c),
@@ -936,11 +968,13 @@ fn adapt(
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
     let mut moves: Vec<Move> = Vec::new();
+    let mut moves_next: Vec<Move> = Vec::new();
     let mut codes: Vec<u64> = Vec::new();
     let mut exps: Vec<f64> = Vec::new();
 
+    // Incremental legal set (one scan, then derived per step) — see `playout`.
+    legal_moves_into(scratch, &mut moves);
     for &mv in best_seq {
-        legal_moves_into(scratch, &mut moves);
         if moves.is_empty() {
             break;
         }
@@ -980,7 +1014,13 @@ fn adapt(
         if !scratch.apply(mv) {
             break;
         }
-        sym.toggle(mv.pos);
+        if sym_on {
+            sym.toggle(mv.pos);
+        } else {
+            sym.toggle_identity(mv.pos);
+        }
+        child_legal_moves_into(&mut moves_next, &moves, scratch, mv);
+        std::mem::swap(&mut moves, &mut moves_next);
     }
 
     // Restore the scratch to its entry state (== initial) for the caller.
