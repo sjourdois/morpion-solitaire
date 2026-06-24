@@ -856,6 +856,9 @@ fn island(
     let mut scratch = initial_state.clone();
     let selfwarm = nrpa_selfwarm();
     while search.running.load(Ordering::Relaxed) {
+        // Fresh head θ each restart (feature-space NRPA; no-op unless --feat-adapt).
+        #[cfg(feature = "neural")]
+        crate::search::neural::feat::restart();
         // Fresh policy each restart (diversity), or a clone of the warm-start
         // seed when one is supplied. With self-warm on, half the islands instead
         // pre-train toward the current global best (compounding) while the rest
@@ -932,12 +935,21 @@ fn playout(
     // branches on this `Option`, so a core build (no bias plugin) — or a registered
     // but unarmed one — pays nothing.
     let bias = reg.bias_modifier().filter(|b| b.active());
+    // Feature-space NRPA (θ·φ over the net's penultimate, φ-B) replaces the frozen
+    // scalar β when active, so it takes precedence over the bias path (feature
+    // `neural`; no-op and unreferenced otherwise).
+    #[cfg(feature = "neural")]
+    let feat = crate::search::neural::feat::active();
+    #[cfg(feature = "neural")]
+    let bias = if feat { None } else { bias };
     // Buffers reused across every step of this playout (cleared per step) so the
     // hottest loop in the search does no per-node heap allocation.
     let mut moves: Vec<Move> = Vec::new();
     let mut moves_next: Vec<Move> = Vec::new();
     let mut weights: Vec<f64> = Vec::new();
     let mut nbuf: Vec<f64> = Vec::new();
+    #[cfg(feature = "neural")]
+    let mut fbuf: Vec<f64> = Vec::new(); // θ·φ per move (feature-space path)
 
     // Incremental legal-move maintenance: one full scan at entry, then each step
     // derives the next set from the played move instead of rescanning the board.
@@ -954,7 +966,26 @@ fn playout(
         // the transcendental for them — the common case while the policy is sparse.
         let coder = sym.move_coder();
         weights.clear();
-        if let Some(b) = bias {
+        // Feature-space path (φ-B): logit = (w[code] + θ·φ)/τ. Takes precedence.
+        #[cfg(feature = "neural")]
+        let used_feat = if feat {
+            crate::search::neural::feat::logits(scratch, &moves, &mut fbuf);
+            weights.extend(moves.iter().enumerate().map(|(i, mv)| {
+                let w = policy
+                    .get(&move_code(&coder, scratch, mv, local))
+                    .copied()
+                    .unwrap_or(0.0);
+                ((w + fbuf[i]) * inv_temp).exp()
+            }));
+            true
+        } else {
+            false
+        };
+        #[cfg(not(feature = "neural"))]
+        let used_feat = false;
+        if used_feat {
+            // weights already built by the feature-space path
+        } else if let Some(b) = bias {
             // A move-bias modifier (neural prior) is active: add its per-move
             // log-space bias (and the GNRPA/corpus β when that's also on) to each
             // logit. One batched call per step.
@@ -1060,6 +1091,12 @@ fn adapt(
     };
     let alpha = reg.alpha();
     let bias = reg.bias_modifier().filter(|b| b.active());
+    // Feature-space NRPA (φ-B): θ·φ replaces the frozen β, and the head θ is adapted
+    // after the table update (feature `neural`).
+    #[cfg(feature = "neural")]
+    let feat = crate::search::neural::feat::active();
+    #[cfg(feature = "neural")]
+    let bias = if feat { None } else { bias };
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
     let mut moves: Vec<Move> = Vec::new();
@@ -1067,6 +1104,10 @@ fn adapt(
     let mut codes: Vec<u64> = Vec::new();
     let mut exps: Vec<f64> = Vec::new();
     let mut nbuf: Vec<f64> = Vec::new();
+    #[cfg(feature = "neural")]
+    let mut fbuf: Vec<f64> = Vec::new();
+    #[cfg(feature = "neural")]
+    let mut probs: Vec<f64> = Vec::new();
 
     // Incremental legal set (one scan, then derived per step) — see `playout`.
     legal_moves_into(scratch, &mut moves);
@@ -1081,7 +1122,23 @@ fn adapt(
         codes.clear();
         codes.extend(moves.iter().map(|m| move_code(&coder, scratch, m, local)));
         exps.clear();
-        if let Some(b) = bias {
+        // Feature-space path (φ-B): logit = (w[code] + θ·φ)/τ. Takes precedence.
+        #[cfg(feature = "neural")]
+        let used_feat = if feat {
+            crate::search::neural::feat::logits(scratch, &moves, &mut fbuf);
+            exps.extend(codes.iter().enumerate().map(|(i, code)| {
+                let w = policy.get(code).copied().unwrap_or(0.0);
+                ((w + fbuf[i]) * inv_temp).exp()
+            }));
+            true
+        } else {
+            false
+        };
+        #[cfg(not(feature = "neural"))]
+        let used_feat = false;
+        if used_feat {
+            // exps already built by the feature-space path
+        } else if let Some(b) = bias {
             // Bias modifier (neural prior) active: same softmax as `playout`, with the
             // per-move neural bias (and β when GNRPA/corpus is also on) in each logit.
             nbuf.clear();
@@ -1122,6 +1179,15 @@ fn adapt(
             if let Some(c) = clamp {
                 *e = e.clamp(-c, c);
             }
+        }
+
+        // φ-B also adapts the head θ over the net's features: θ += α_θ(φ_chosen − Σ p φ),
+        // with the same softmax probabilities the table update used.
+        #[cfg(feature = "neural")]
+        if used_feat {
+            probs.clear();
+            probs.extend(exps.iter().map(|e| e / z));
+            crate::search::neural::feat::adapt(scratch, &moves, &mv, &probs);
         }
 
         if !scratch.apply(mv) {
