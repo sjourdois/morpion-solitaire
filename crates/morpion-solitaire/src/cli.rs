@@ -103,17 +103,38 @@ struct SearchArgs {
     /// Beam width.
     #[arg(long, default_value_t = 64)]
     width: usize,
+    /// Stabilized-NRPA logit clamp C (default 3; `0` disables clamping). The tight
+    /// sweet spot for record hunting; only re-tune for experiments.
+    #[arg(long, value_name = "C")]
+    clamp: Option<f64>,
+    /// Policy adaptation step size α (default 1.0).
+    #[arg(long, value_name = "A")]
+    alpha: Option<f64>,
+    /// Drop symmetry-invariant move coding (identity frame only): ~+16 % throughput
+    /// at neutral score — recommended for cold record runs without warm-start.
+    #[arg(long)]
+    no_symmetry: bool,
     /// Perturbation genetic-crossover rate (0 = off). Only used by
     /// `--algo perturbation`.
     #[arg(long, default_value_t = 0.0)]
     crossover: f64,
+    /// Perturbation destroy-size lower bound K_min (default 8). `--algo perturbation`.
+    #[arg(long, value_name = "K")]
+    kmin: Option<usize>,
+    /// Perturbation destroy-size upper bound K_max (default 70). `--algo perturbation`.
+    #[arg(long, value_name = "K")]
+    kmax: Option<usize>,
+    /// Perturbation tabu/preservation window (default 10). `--algo perturbation`.
+    #[arg(long, value_name = "N")]
+    window: Option<usize>,
     /// Warm-start NRPA from a game file (policy seed).
     #[arg(long, value_name = "FILE")]
     warm: Option<PathBuf>,
     /// Start from a loaded position instead of the empty cross.
     #[arg(long, value_name = "FILE")]
     from: Option<PathBuf>,
-    /// Number of threads (default: cores − 2).
+    /// Worker threads (default: all logical cores). Sizes the rayon pool the
+    /// islands draw from; best-effort (no-op if the pool is already built).
     #[arg(long)]
     threads: Option<usize>,
     /// RNG seed (reproducibility; recorded in the output).
@@ -395,6 +416,28 @@ fn spawn_search(
         .as_ref()
         .map(|s| s.variant)
         .unwrap_or(cli_variant);
+
+    // Core tuning levers (proper options, not env vars). Process-global overrides
+    // read by every island thread; set them before spawning. Unset ⇒ engine default.
+    if let Some(c) = a.clamp {
+        nrpa::set_clamp_override(c);
+    }
+    if let Some(al) = a.alpha {
+        nrpa::set_alpha_override(al);
+    }
+    if a.no_symmetry {
+        nrpa::set_sym_override(false);
+    }
+    if let Some(k) = a.kmin {
+        nrpa::set_perturb_k_min_override(k);
+    }
+    if let Some(k) = a.kmax {
+        nrpa::set_perturb_k_max_override(k);
+    }
+    if let Some(w) = a.window {
+        nrpa::set_perturb_window_override(w);
+    }
+
     let s = search.clone();
 
     let method = match a.algo {

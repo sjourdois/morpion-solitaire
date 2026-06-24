@@ -33,19 +33,68 @@ use crate::game::{
     state::GameState,
 };
 
+// ---- CLI run-config overrides ---------------------------------------------
+// The CLI exposes the core tuning levers as proper options, never env vars. Each
+// lever is a process-global atomic set once *before* a search launches, so every
+// island thread observes it; when unset, the reader returns the baked-in default.
+// One search runs at a time, so a single global slot is unambiguous.
+const F64_UNSET: u64 = u64::MAX; // f64-bits sentinel ⇒ "not overridden"
+static SYM_OVR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0 unset · 1 off · 2 on
+static CLAMP_OVR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(F64_UNSET); // f64 bits; ≤0 ⇒ off
+static ALPHA_OVR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(F64_UNSET);
+#[cfg(not(target_arch = "wasm32"))]
+static KMIN_OVR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // 0 ⇒ unset
+#[cfg(not(target_arch = "wasm32"))]
+static KMAX_OVR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+static WINDOW_OVR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Override symmetry-invariant move coding (`--symmetry` / `--no-symmetry`).
+#[allow(dead_code)] // used by the CLI
+pub fn set_sym_override(on: bool) {
+    SYM_OVR.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+}
+/// Override the Stabilized-NRPA logit clamp C (`--clamp`; `0` ⇒ no clamping).
+#[allow(dead_code)]
+pub fn set_clamp_override(c: f64) {
+    CLAMP_OVR.store(c.to_bits(), Ordering::Relaxed);
+}
+/// Override the policy adaptation step size α (`--alpha`).
+#[allow(dead_code)]
+pub fn set_alpha_override(alpha: f64) {
+    ALPHA_OVR.store(alpha.to_bits(), Ordering::Relaxed);
+}
+/// Override the perturbation destroy-size lower bound K_min (`--kmin`).
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub fn set_perturb_k_min_override(k: usize) {
+    KMIN_OVR.store(k, Ordering::Relaxed);
+}
+/// Override the perturbation destroy-size upper bound K_max (`--kmax`).
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub fn set_perturb_k_max_override(k: usize) {
+    KMAX_OVR.store(k, Ordering::Relaxed);
+}
+/// Override the perturbation tabu/preservation window (`--window`).
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub fn set_perturb_window_override(w: usize) {
+    WINDOW_OVR.store(w, Ordering::Relaxed);
+}
+
 /// Policy adaptation step size α. Default 1.0 (the unclamped sweet spot; 0.5 and
 /// 2.0 both regressed to ~92 *without* clamping). Clamping changes the dynamics,
-/// so `NRPA_ALPHA` re-opens it for sweeping under clamp. Read once.
+/// so `--alpha` re-opens it for sweeping under clamp.
 fn nrpa_alpha() -> f64 {
-    use std::sync::OnceLock;
-    static A: OnceLock<f64> = OnceLock::new();
-    *A.get_or_init(|| {
-        std::env::var("NRPA_ALPHA")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .filter(|&a: &f64| a > 0.0)
-            .unwrap_or(1.0)
-    })
+    let o = ALPHA_OVR.load(Ordering::Relaxed);
+    if o != F64_UNSET {
+        let a = f64::from_bits(o);
+        if a > 0.0 {
+            return a;
+        }
+    }
+    1.0
 }
 
 /// GNRPA prior-bias strength (per occupied neighbour). 0 ⇒ plain NRPA.
@@ -190,19 +239,18 @@ fn nrpa_temp() -> f64 {
 
 /// Stabilization: clamp every adapted policy logit to ±C — a Stabilized-NRPA
 /// flavour that curbs the premature convergence runaway weights cause. **On by
-/// default at C = 3** (`NRPA_CLAMP=<C>` overrides; `NRPA_CLAMP=0` disables). Set
+/// default at C = 3** (`--clamp <C>` overrides; `--clamp 0` disables). Set
 /// from a sweep where clamping lifts the mean *and* cuts variance, and the gain
 /// **grows** with budget/level rather than capping. The C sweet spot is tight:
 /// 5T L4/120 s mean best — off 95, C=2 99, **C=3 112**, C=4 105, C=6 94 (C=3 beat
 /// C=4 in every round of a 5-round head-to-head). Read once.
 fn nrpa_clamp() -> Option<f64> {
-    use std::sync::OnceLock;
-    const DEFAULT_CLAMP: f64 = 3.0;
-    static C: OnceLock<Option<f64>> = OnceLock::new();
-    *C.get_or_init(|| match std::env::var("NRPA_CLAMP") {
-        Ok(s) => s.parse::<f64>().ok().filter(|&c| c > 0.0), // explicit value; 0/invalid ⇒ off
-        Err(_) => Some(DEFAULT_CLAMP),                       // unset ⇒ default on
-    })
+    let o = CLAMP_OVR.load(Ordering::Relaxed);
+    if o != F64_UNSET {
+        let c = f64::from_bits(o);
+        return if c > 0.0 { Some(c) } else { None };
+    }
+    Some(3.0) // unset ⇒ default on at C=3
 }
 
 /// Mix a symmetry-invariant local-neighbourhood feature into the move code
@@ -218,14 +266,13 @@ fn nrpa_local() -> bool {
     })
 }
 
-/// Symmetry-invariant move coding (`NRPA_SYM`, default on). On: moves are coded in
-/// the board's canonical D4 frame and all 8 Zobrist hashes are maintained. Off
-/// (`NRPA_SYM=0`): the identity frame only (one hash), skipping the 8-hash
-/// maintenance — ~+16% throughput at neutral score, for cold record runs. Read once.
+/// Symmetry-invariant move coding (default on). On: moves are coded in the board's
+/// canonical D4 frame and all 8 Zobrist hashes are maintained. Off (`--no-symmetry`):
+/// the identity frame only (one hash), skipping the 8-hash maintenance — ~+16%
+/// throughput at neutral score, for cold record runs.
 fn nrpa_sym() -> bool {
-    use std::sync::OnceLock;
-    static S: OnceLock<bool> = OnceLock::new();
-    *S.get_or_init(|| std::env::var("NRPA_SYM").map(|v| v != "0").unwrap_or(true))
+    // 1 ⇒ off, 2 ⇒ on, 0 (unset) ⇒ default on.
+    SYM_OVR.load(Ordering::Relaxed) != 1
 }
 
 /// Island portfolio (`NRPA_PORTFOLIO=1`, default off): spread each island's
@@ -401,30 +448,24 @@ fn build_warm_policy(initial: &GameState, seq: &[Move], iters: usize) -> Policy 
 /// Perturbation destroy size K is drawn uniformly from `[K_MIN, K_MAX]` each
 /// round — a mix of small local refinements and large restructures, capped to the
 /// current game length. The destroy-size distribution is the biggest perturbation
-/// lever, so both bounds are env-tunable (`PERTURB_KMIN` / `PERTURB_KMAX`).
+/// lever, so both bounds are tunable via `--kmin` / `--kmax`.
 #[cfg(not(target_arch = "wasm32"))]
 fn perturb_k_min() -> usize {
-    use std::sync::OnceLock;
-    static V: OnceLock<usize> = OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("PERTURB_KMIN")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .filter(|&k| k >= 1)
-            .unwrap_or(8)
-    })
+    let o = KMIN_OVR.load(Ordering::Relaxed);
+    if o >= 1 {
+        o
+    } else {
+        8
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn perturb_k_max() -> usize {
-    use std::sync::OnceLock;
-    static V: OnceLock<usize> = OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("PERTURB_KMAX")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .filter(|&k| k >= 1)
-            .unwrap_or(70)
-    })
+    let o = KMAX_OVR.load(Ordering::Relaxed);
+    if o >= 1 {
+        o
+    } else {
+        70
+    }
 }
 
 /// Effort (round duration) scales with K: a tiny completion needs only a couple
@@ -554,14 +595,12 @@ fn perturb_warm() -> usize {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn perturb_window() -> usize {
-    use std::sync::OnceLock;
-    static V: OnceLock<usize> = OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("PERTURB_WINDOW")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(10)
-    })
+    let o = WINDOW_OVR.load(Ordering::Relaxed);
+    if o >= 1 {
+        o
+    } else {
+        10
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 const PERTURB_ARCHIVE_MAX: usize = 20_000;
@@ -1334,8 +1373,8 @@ mod tests {
     /// path). Seeds the archive from rosin178 truncated to `SEED_LEN` (so there is
     /// real room to climb, below the 178 ceiling), runs the actual archive-based
     /// `run_perturbation` for `NRPA_SECS`, and reports the best-score distribution
-    /// over `NRPA_RUNS`. Sweep the destroy-size distribution with `PERTURB_KMIN` /
-    /// `PERTURB_KMAX` / `PERTURB_WINDOW`. Env: NRPA_LEVEL (repair level),
+    /// over `NRPA_RUNS`. Sweep the destroy-size distribution with `--kmin` /
+    /// `--kmax` / `--window`. Env: NRPA_LEVEL (repair level),
     /// NRPA_SECS, NRPA_RUNS, SEED_LEN.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
