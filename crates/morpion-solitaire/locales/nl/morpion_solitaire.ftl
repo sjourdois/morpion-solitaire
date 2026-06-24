@@ -164,3 +164,19 @@ opt-macro-k = Macrolengte (k)
 opt-macro-k-hint = Zetten per motief (standaard 2). Toegepast bij eerste gebruik.
 opt-macro-topn = Macrobibliotheekgrootte
 opt-macro-topn-hint = Houd de N meest frequente motieven (0 = alle; standaard 32).
+
+# Search-setup overlay
+search-configure = ⚙ Zoekopdracht configureren…
+search-configure-hint = Engine, opties, prior, stopcriteria
+stop-criteria = Stopcriteria
+stop-after = Stoppen na
+stop-at-score = Stoppen bij score
+stop-nodes = Stoppen na knopen
+adv-header = Geavanceerd
+adv-threads = Threads
+adv-max-memory = Max. geheugen
+adv-ignore-overflow = Rasteroverloop negeren
+setup-cli-command = Equivalente CLI-opdracht
+setup-copy-command = Opdracht kopiëren
+setup-running-note = Er loopt een zoekopdracht — stopcriteria gelden nu; andere wijzigingen bij de volgende run.
+setup-start-search = ▶  Zoeken starten

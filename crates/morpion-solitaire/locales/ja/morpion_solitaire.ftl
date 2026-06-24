@@ -164,3 +164,19 @@ opt-macro-k = マクロ長 (k)
 opt-macro-k-hint = モチーフあたりの手数（既定 2）。初回使用時に適用。
 opt-macro-topn = マクロ辞書サイズ
 opt-macro-topn-hint = 最頻出 N モチーフを保持（0 = 全部、既定 32）。
+
+# Search-setup overlay
+search-configure = ⚙ 探索を設定…
+search-configure-hint = エンジン・オプション・事前分布・停止条件
+stop-criteria = 停止条件
+stop-after = 経過で停止
+stop-at-score = スコアで停止
+stop-nodes = ノード数で停止
+adv-header = 詳細
+adv-threads = スレッド
+adv-max-memory = 最大メモリ
+adv-ignore-overflow = グリッド溢れを無視
+setup-cli-command = 等価な CLI コマンド
+setup-copy-command = コマンドをコピー
+setup-running-note = 探索中です — 停止条件は即時に適用、その他の変更は次回実行から。
+setup-start-search = ▶  探索を開始

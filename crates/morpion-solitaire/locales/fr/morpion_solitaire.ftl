@@ -164,3 +164,19 @@ opt-macro-k = Longueur macro (k)
 opt-macro-k-hint = Coups par motif (défaut 2). Appliqué à la première utilisation.
 opt-macro-topn = Taille bibliothèque macro
 opt-macro-topn-hint = Garde les N motifs les plus fréquents (0 = tous ; défaut 32).
+
+# Search-setup overlay
+search-configure = ⚙ Configurer la recherche…
+search-configure-hint = Moteur, options, prior, critères d’arrêt
+stop-criteria = Critères d’arrêt
+stop-after = Arrêter après
+stop-at-score = Arrêter au score
+stop-nodes = Arrêter après (nœuds)
+adv-header = Avancé
+adv-threads = Threads
+adv-max-memory = Mémoire max
+adv-ignore-overflow = Ignorer le débordement de grille
+setup-cli-command = Commande CLI équivalente
+setup-copy-command = Copier la commande
+setup-running-note = Une recherche tourne — les critères d’arrêt s’appliquent ; les autres changements au prochain lancement.
+setup-start-search = ▶  Lancer la recherche

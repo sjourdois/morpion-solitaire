@@ -164,3 +164,19 @@ opt-macro-k = Longitud macro (k)
 opt-macro-k-hint = Jugadas por motivo (predeterminado 2). Aplicado al primer uso.
 opt-macro-topn = Tamaño biblioteca macro
 opt-macro-topn-hint = Conservar los N motivos más frecuentes (0 = todos; predeterminado 32).
+
+# Search-setup overlay
+search-configure = ⚙ Configurar búsqueda…
+search-configure-hint = Motor, opciones, prior, criterios de parada
+stop-criteria = Criterios de parada
+stop-after = Parar tras
+stop-at-score = Parar al puntaje
+stop-nodes = Parar tras nodos
+adv-header = Avanzado
+adv-threads = Hilos
+adv-max-memory = Memoria máx.
+adv-ignore-overflow = Ignorar desbordamiento de rejilla
+setup-cli-command = Comando CLI equivalente
+setup-copy-command = Copiar comando
+setup-running-note = Una búsqueda está en curso — los criterios de parada se aplican ya; otros cambios en la próxima ejecución.
+setup-start-search = ▶  Iniciar búsqueda
