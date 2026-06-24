@@ -309,7 +309,7 @@ impl SymmetryHashes {
     }
 
     /// Build a [`MoveCoder`] for the **identity frame only** — the `--no-symmetry`
-    /// path. It codes against `hashes[0]` (maintained by [`toggle_identity`]) with the
+    /// path. It codes against `hashes[0]` (maintained by [`toggle_identity`](Self::toggle_identity)) with the
     /// identity transform, ignoring the other 7 hashes (which `toggle_identity` leaves
     /// stale). No symmetry folding: a weight learnt in one orientation does NOT transfer
     /// to its images. Must be used instead of [`move_coder`](Self::move_coder) whenever

@@ -11,7 +11,7 @@
 //! hooks (presence markers resolved once per search into a scalar — no per-node cost),
 //! declarative [`OptionSpec`]s, and the **values map** ([`OptionValue`] per key) — the
 //! single source of truth the CLI/GUI write and the engine reads. Adding a plugin is one
-//! file plus a line in [`all_plugins`].
+//! file plus a line in `all_plugins`.
 
 // This module is the plugin *framework* only (traits, the [`Registry`], declarative
 // options, the experimental gate, the hooks). Each plugin's *registration* lives with
@@ -191,7 +191,7 @@ impl Registry {
     pub fn method_visible(&self, id: &str) -> bool {
         !self.is_method_experimental(id) || experimental_enabled()
     }
-    /// Whether option `key` should be exposed in the current run (see [`method_visible`]).
+    /// Whether option `key` should be exposed in the current run (see [`method_visible`](Self::method_visible)).
     pub fn option_visible(&self, key: &str) -> bool {
         !self.is_option_experimental(key) || experimental_enabled()
     }
