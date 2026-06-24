@@ -8,6 +8,7 @@
 //! **Phase 1** (this file): the `Plugin`/`Registry`/`Method` scaffolding + the four core
 //! method plugins. Hooks/modifiers and option specs arrive in later phases.
 
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::game::{moves::Move, rules::Variant, state::GameState};
@@ -45,16 +46,24 @@ pub trait Method: Sync {
     fn checkpoint_kind(&self) -> Option<&'static str>;
 }
 
-/// Where plugins register their contributions. Phase 1 holds methods only; modifier
-/// hooks and option specs are added in later phases.
+/// Where plugins register their contributions: methods and modifier hooks. Option
+/// specs and further hooks are added in later phases.
 #[derive(Default)]
 pub struct Registry {
     methods: Vec<&'static dyn Method>,
+    coding: Option<&'static dyn CodingModifier>,
+    adapt: Option<&'static dyn AdaptModifier>,
 }
 
 impl Registry {
     pub fn add_method(&mut self, m: &'static dyn Method) {
         self.methods.push(m);
+    }
+    pub fn add_coding(&mut self, m: &'static dyn CodingModifier) {
+        self.coding = Some(m);
+    }
+    pub fn add_adapt(&mut self, m: &'static dyn AdaptModifier) {
+        self.adapt = Some(m);
     }
     /// All registered methods, in registration (dependency) order.
     pub fn methods(&self) -> &[&'static dyn Method] {
@@ -64,6 +73,94 @@ impl Registry {
     pub fn method(&self, id: &str) -> Option<&'static dyn Method> {
         self.methods.iter().copied().find(|m| m.id() == id)
     }
+
+    // Hooks resolved once per search into a scalar (no per-node cost). Defaults
+    // match plain NRPA when no modifier is registered.
+    pub fn sym_on(&self) -> bool {
+        self.coding.is_none_or(|c| c.sym_on())
+    }
+    pub fn clamp(&self) -> Option<f64> {
+        self.adapt.map_or(Some(3.0), |a| a.clamp())
+    }
+    pub fn alpha(&self) -> f64 {
+        self.adapt.map_or(1.0, |a| a.alpha())
+    }
+}
+
+// ---- modifier hooks (resolved once per search) ----------------------------
+
+/// Move-coding hook: symmetry-invariant (canonical D4) coding vs the identity frame.
+pub trait CodingModifier: Sync {
+    fn sym_on(&self) -> bool;
+}
+/// Adapt hook: the policy-update hyperparameters — logit clamp C and step α.
+pub trait AdaptModifier: Sync {
+    fn clamp(&self) -> Option<f64>;
+    fn alpha(&self) -> f64;
+}
+
+const F64_UNSET: u64 = u64::MAX; // f64-bits sentinel ⇒ "not set ⇒ default"
+
+/// Core symmetry modifier. Owns the `--no-symmetry` state. On (default): canonical
+/// D4 coding, all 8 Zobrist hashes maintained. Off: identity frame only (one hash),
+/// ~+16% throughput at neutral score — for cold record runs.
+struct CoreCoding {
+    off: AtomicU8, // 0 unset · 1 off · 2 on
+}
+impl CodingModifier for CoreCoding {
+    fn sym_on(&self) -> bool {
+        self.off.load(Ordering::Relaxed) != 1
+    }
+}
+static CORE_CODING: CoreCoding = CoreCoding {
+    off: AtomicU8::new(0),
+};
+
+/// Core adapt modifier. Owns `--clamp`/`--alpha`. The logit clamp (Stabilized-NRPA)
+/// is on by default at C=3 (tight sweet spot; 5T L4/120 s ~112 vs ~95 unclamped);
+/// `--clamp 0` disables. α default 1.0 (0.5/2.0 regressed unclamped).
+struct CoreAdapt {
+    clamp_bits: AtomicU64,
+    alpha_bits: AtomicU64,
+}
+impl AdaptModifier for CoreAdapt {
+    fn clamp(&self) -> Option<f64> {
+        let o = self.clamp_bits.load(Ordering::Relaxed);
+        if o != F64_UNSET {
+            let c = f64::from_bits(o);
+            return if c > 0.0 { Some(c) } else { None };
+        }
+        Some(3.0)
+    }
+    fn alpha(&self) -> f64 {
+        let o = self.alpha_bits.load(Ordering::Relaxed);
+        if o != F64_UNSET {
+            let a = f64::from_bits(o);
+            if a > 0.0 {
+                return a;
+            }
+        }
+        1.0
+    }
+}
+static CORE_ADAPT: CoreAdapt = CoreAdapt {
+    clamp_bits: AtomicU64::new(F64_UNSET),
+    alpha_bits: AtomicU64::new(F64_UNSET),
+};
+
+/// CLI/GUI setters (no env vars). Set before a search launches; every island reads
+/// the modifier via the registry.
+#[allow(dead_code)] // used by the CLI/GUI
+pub fn set_symmetry(on: bool) {
+    CORE_CODING.off.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+}
+#[allow(dead_code)]
+pub fn set_clamp(c: f64) {
+    CORE_ADAPT.clamp_bits.store(c.to_bits(), Ordering::Relaxed);
+}
+#[allow(dead_code)]
+pub fn set_alpha(a: f64) {
+    CORE_ADAPT.alpha_bits.store(a.to_bits(), Ordering::Relaxed);
 }
 
 /// A plugin: a unit of contribution with dependencies. The core is itself plugins.
@@ -224,6 +321,28 @@ static PERTURBATION_PLUGIN: PerturbationPlugin = PerturbationPlugin;
 static SYSTEMATIC_PLUGIN: SystematicPlugin = SystematicPlugin;
 static BEAM_PLUGIN: BeamPlugin = BeamPlugin;
 
+// Core modifier plugins (apply to the NRPA family).
+struct SymmetryPlugin;
+impl Plugin for SymmetryPlugin {
+    fn id(&self) -> &'static str {
+        "symmetry"
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_coding(&CORE_CODING);
+    }
+}
+struct AdaptPlugin;
+impl Plugin for AdaptPlugin {
+    fn id(&self) -> &'static str {
+        "adapt"
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_adapt(&CORE_ADAPT);
+    }
+}
+static SYMMETRY_PLUGIN: SymmetryPlugin = SymmetryPlugin;
+static ADAPT_PLUGIN: AdaptPlugin = AdaptPlugin;
+
 /// Every plugin compiled into this build: the core set, plus experimental ones
 /// appended under their feature in later phases.
 fn all_plugins() -> Vec<&'static dyn Plugin> {
@@ -233,6 +352,8 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
         &PERTURBATION_PLUGIN,
         &SYSTEMATIC_PLUGIN,
         &BEAM_PLUGIN,
+        &SYMMETRY_PLUGIN,
+        &ADAPT_PLUGIN,
     ];
     // e.g. #[cfg(feature = "neural")] v.push(&NEURAL_PLUGIN); — later phases.
     v
