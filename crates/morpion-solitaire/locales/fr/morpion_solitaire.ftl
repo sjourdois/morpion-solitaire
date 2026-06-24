@@ -158,3 +158,9 @@ opt-feat-adapt = NRPA espace-features
 opt-feat-adapt-hint = Adapte une tête sur les features gelées du réseau en ligne (φ-B) au lieu d’un biais fixe. Nécessite un prior. Expérimental.
 opt-feat-alpha = Pas espace-features (α_θ)
 opt-feat-alpha-hint = Pas de la tête pour la NRPA espace-features. Défaut 0.1. Utilisé seulement si activé.
+opt-macros = Macro-actions
+opt-macros-hint = NRPA choisit aussi des motifs multi-coups extraits des records (5T uniquement). Expérimental.
+opt-macro-k = Longueur macro (k)
+opt-macro-k-hint = Coups par motif (défaut 2). Appliqué à la première utilisation.
+opt-macro-topn = Taille bibliothèque macro
+opt-macro-topn-hint = Garde les N motifs les plus fréquents (0 = tous ; défaut 32).

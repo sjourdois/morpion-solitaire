@@ -158,3 +158,9 @@ opt-feat-adapt = 特徴空間 NRPA
 opt-feat-adapt-hint = 固定の事前バイアスの代わりに、ネットの凍結特徴上のヘッドをオンライン適応（φ-B）。事前分布が必要。実験的。
 opt-feat-alpha = 特徴空間ステップ (α_θ)
 opt-feat-alpha-hint = 特徴空間 NRPA のヘッドのステップ幅。既定 0.1。有効時のみ。
+opt-macros = マクロ手
+opt-macros-hint = NRPA が記録から抽出した複数手モチーフも選択（5T のみ）。実験的。
+opt-macro-k = マクロ長 (k)
+opt-macro-k-hint = モチーフあたりの手数（既定 2）。初回使用時に適用。
+opt-macro-topn = マクロ辞書サイズ
+opt-macro-topn-hint = 最頻出 N モチーフを保持（0 = 全部、既定 32）。

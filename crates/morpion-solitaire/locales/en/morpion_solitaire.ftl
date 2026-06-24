@@ -158,3 +158,9 @@ opt-feat-adapt = Feature-space NRPA
 opt-feat-adapt-hint = Adapt a head over the net's frozen features online (φ-B) instead of a fixed prior bias. Needs a prior. Experimental.
 opt-feat-alpha = Feature-space step (α_θ)
 opt-feat-alpha-hint = Head step size for feature-space NRPA. Default 0.1. Only used when feature-space is on.
+opt-macros = Macro-actions
+opt-macros-hint = NRPA also picks multi-move motifs mined from records (5T only). Experimental.
+opt-macro-k = Macro length (k)
+opt-macro-k-hint = Moves per motif (default 2). Applied at first use.
+opt-macro-topn = Macro library size
+opt-macro-topn-hint = Keep the top-N most frequent motifs (0 = all; default 32).

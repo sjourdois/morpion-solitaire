@@ -667,6 +667,59 @@ impl Plugin for CrossoverPlugin {
 }
 static CROSSOVER_PLUGIN: CrossoverPlugin = CrossoverPlugin;
 
+// Macro-actions: NRPA also samples multi-move motifs mined from records (5T only).
+// Native-only (the macro path uses `nrpa::move_playable`); contributes options only,
+// the engine reads them once per search in `island`.
+#[cfg(not(target_arch = "wasm32"))]
+struct MacrosPlugin;
+#[cfg(not(target_arch = "wasm32"))]
+impl Plugin for MacrosPlugin {
+    fn id(&self) -> &'static str {
+        "macros"
+    }
+    fn experimental(&self) -> bool {
+        true
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_option(OptionSpec {
+            key: "macros",
+            label_key: "opt-macros",
+            help_key: "opt-macros-hint",
+            help: "Macro-actions: NRPA also picks multi-move motifs mined from records \
+                   (5T only), composing over a coarser horizon. Experimental.",
+            kind: OptionKind::Toggle { default: false },
+            scope: Scope::Methods(&["nrpa"]),
+        });
+        reg.add_option(OptionSpec {
+            key: "macro-k",
+            label_key: "opt-macro-k",
+            help_key: "opt-macro-k-hint",
+            help: "Macro motif length in moves (default 2). Read once at first use.",
+            kind: OptionKind::Int {
+                default: 2,
+                min: 1,
+                max: 6,
+            },
+            scope: Scope::Methods(&["nrpa"]),
+        });
+        reg.add_option(OptionSpec {
+            key: "macro-topn",
+            label_key: "opt-macro-topn",
+            help_key: "opt-macro-topn-hint",
+            help: "Macro library size: keep the top-N most frequent motifs (0 = all, \
+                   default 32). Read once at first use.",
+            kind: OptionKind::Int {
+                default: 32,
+                min: 0,
+                max: 100_000,
+            },
+            scope: Scope::Methods(&["nrpa"]),
+        });
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+static MACROS_PLUGIN: MacrosPlugin = MacrosPlugin;
+
 /// Every plugin compiled into this build: the core set, plus experimental ones
 /// appended under their feature in later phases.
 fn all_plugins() -> Vec<&'static dyn Plugin> {
@@ -684,6 +737,9 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
     // Perturbation is native-only (OS threads); on wasm it isn't compiled in.
     #[cfg(not(target_arch = "wasm32"))]
     v.push(&PERTURBATION_PLUGIN);
+    // Macro-actions (native-only): contributes the macros options for the nrpa method.
+    #[cfg(not(target_arch = "wasm32"))]
+    v.push(&MACROS_PLUGIN);
     // The experimental neural prior (feature `neural`, native-only): a BiasModifier
     // depending on nrpa. Absent ⇒ no bias hook, no --neural-scale option.
     #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]

@@ -158,3 +158,9 @@ opt-feat-adapt = Feature-ruimte-NRPA
 opt-feat-adapt-hint = Past online een kop aan over de bevroren netwerk-features (φ-B) in plaats van een vaste prior-bias. Vereist een prior. Experimenteel.
 opt-feat-alpha = Feature-ruimte-stap (α_θ)
 opt-feat-alpha-hint = Stapgrootte van de kop voor feature-ruimte-NRPA. Standaard 0.1. Alleen indien actief.
+opt-macros = Macro-acties
+opt-macros-hint = NRPA kiest ook meerzet-motieven uit records (alleen 5T). Experimenteel.
+opt-macro-k = Macrolengte (k)
+opt-macro-k-hint = Zetten per motief (standaard 2). Toegepast bij eerste gebruik.
+opt-macro-topn = Macrobibliotheekgrootte
+opt-macro-topn-hint = Houd de N meest frequente motieven (0 = alle; standaard 32).
