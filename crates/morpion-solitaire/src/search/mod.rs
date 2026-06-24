@@ -2,6 +2,8 @@ pub mod beam;
 pub mod bounds;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod checkpoint;
+#[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
+pub mod neural;
 pub mod nrpa;
 pub mod plugin;
 pub mod symmetry;
