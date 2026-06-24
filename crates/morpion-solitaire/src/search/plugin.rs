@@ -5,8 +5,11 @@
 //! is expressed as plugins; experimental ones register only under their Cargo feature.
 //! The CLI and GUI dispatch through the [`Registry`] and name no specific plugin.
 //!
-//! **Phase 1** (this file): the `Plugin`/`Registry`/`Method` scaffolding + the four core
-//! method plugins. Hooks/modifiers and option specs arrive in later phases.
+//! In place: the `Plugin`/`Registry`/`Method` scaffolding + core method plugins; the
+//! `CodingModifier`/`AdaptModifier`/`PerturbModifier` hooks (resolved once per search
+//! into a scalar — no per-node cost) with core modifier plugins (symmetry, clamp/α,
+//! crossover); and declarative [`OptionSpec`]s for generic CLI/GUI rendering. Still to
+//! come: the dynamic CLI + generic GUI consuming the specs, and experimental plugins.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -52,6 +55,7 @@ pub struct Registry {
     coding: Option<&'static dyn CodingModifier>,
     adapt: Option<&'static dyn AdaptModifier>,
     perturb: Option<&'static dyn PerturbModifier>,
+    options: Vec<OptionSpec>,
 }
 
 impl Registry {
@@ -66,6 +70,13 @@ impl Registry {
     }
     pub fn add_perturb(&mut self, m: &'static dyn PerturbModifier) {
         self.perturb = Some(m);
+    }
+    pub fn add_option(&mut self, spec: OptionSpec) {
+        self.options.push(spec);
+    }
+    /// All option specs contributed by registered plugins (for CLI/GUI rendering).
+    pub fn options(&self) -> &[OptionSpec] {
+        &self.options
     }
     /// All registered methods, in registration (dependency) order.
     pub fn methods(&self) -> &[&'static dyn Method] {
@@ -199,6 +210,47 @@ static CORE_CROSSOVER: CoreCrossover = CoreCrossover {
 #[allow(dead_code)]
 pub fn set_crossover(rate: f64) {
     CORE_CROSSOVER.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
+}
+
+// ---- declarative options --------------------------------------------------
+
+/// The type + bounds of a tunable option — drives generic CLI/GUI rendering.
+#[derive(Clone, Copy, Debug)]
+pub enum OptionKind {
+    Toggle {
+        default: bool,
+    },
+    Float {
+        default: f64,
+        min: f64,
+        max: f64,
+        step: f64,
+    },
+    Int {
+        default: i64,
+        min: i64,
+        max: i64,
+    },
+}
+
+/// Which methods an option applies to.
+#[derive(Clone, Copy, Debug)]
+pub enum Scope {
+    /// Applies to the whole NRPA family (every method that adapts a policy).
+    NrpaFamily,
+    /// Applies only to the listed method ids.
+    Methods(&'static [&'static str]),
+}
+
+/// A declarative description of a tunable option. The CLI and GUI render from
+/// these (a plugin contributes the specs for the levers it owns).
+#[derive(Clone, Copy, Debug)]
+pub struct OptionSpec {
+    pub key: &'static str,
+    pub label_key: &'static str,
+    pub help_key: &'static str,
+    pub kind: OptionKind,
+    pub scope: Scope,
 }
 
 /// A plugin: a unit of contribution with dependencies. The core is itself plugins.
@@ -346,10 +398,51 @@ macro_rules! core_method_plugin {
         }
     };
 }
-core_method_plugin!(NrpaPlugin, "nrpa", &NRPA);
 core_method_plugin!(PerturbationPlugin, "perturbation", &PERTURBATION);
 core_method_plugin!(SystematicPlugin, "systematic", &SYSTEMATIC);
-core_method_plugin!(BeamPlugin, "beam", &BEAM);
+
+struct NrpaPlugin;
+impl Plugin for NrpaPlugin {
+    fn id(&self) -> &'static str {
+        "nrpa"
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_method(&NRPA);
+        // Nesting level applies to the whole NRPA family (perturbation wraps NRPA).
+        reg.add_option(OptionSpec {
+            key: "level",
+            label_key: "opt-level",
+            help_key: "opt-level-hint",
+            kind: OptionKind::Int {
+                default: 3,
+                min: 1,
+                max: 6,
+            },
+            scope: Scope::NrpaFamily,
+        });
+    }
+}
+
+struct BeamPlugin;
+impl Plugin for BeamPlugin {
+    fn id(&self) -> &'static str {
+        "beam"
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_method(&BEAM);
+        reg.add_option(OptionSpec {
+            key: "width",
+            label_key: "opt-width",
+            help_key: "opt-width-hint",
+            kind: OptionKind::Int {
+                default: 64,
+                min: 1,
+                max: 100_000,
+            },
+            scope: Scope::Methods(&["beam"]),
+        });
+    }
+}
 
 static NRPA_PLUGIN: NrpaPlugin = NrpaPlugin;
 static PERTURBATION_PLUGIN: PerturbationPlugin = PerturbationPlugin;
@@ -364,6 +457,13 @@ impl Plugin for SymmetryPlugin {
     }
     fn register(&self, reg: &mut Registry) {
         reg.add_coding(&CORE_CODING);
+        reg.add_option(OptionSpec {
+            key: "symmetry",
+            label_key: "opt-symmetry",
+            help_key: "opt-symmetry-hint",
+            kind: OptionKind::Toggle { default: true },
+            scope: Scope::NrpaFamily,
+        });
     }
 }
 struct AdaptPlugin;
@@ -373,6 +473,30 @@ impl Plugin for AdaptPlugin {
     }
     fn register(&self, reg: &mut Registry) {
         reg.add_adapt(&CORE_ADAPT);
+        reg.add_option(OptionSpec {
+            key: "clamp",
+            label_key: "opt-clamp",
+            help_key: "opt-clamp-hint",
+            kind: OptionKind::Float {
+                default: 3.0,
+                min: 0.0,
+                max: 10.0,
+                step: 0.5,
+            },
+            scope: Scope::NrpaFamily,
+        });
+        reg.add_option(OptionSpec {
+            key: "alpha",
+            label_key: "opt-alpha",
+            help_key: "opt-alpha-hint",
+            kind: OptionKind::Float {
+                default: 1.0,
+                min: 0.1,
+                max: 3.0,
+                step: 0.05,
+            },
+            scope: Scope::NrpaFamily,
+        });
     }
 }
 static SYMMETRY_PLUGIN: SymmetryPlugin = SymmetryPlugin;
@@ -390,6 +514,18 @@ impl Plugin for CrossoverPlugin {
     }
     fn register(&self, reg: &mut Registry) {
         reg.add_perturb(&CORE_CROSSOVER);
+        reg.add_option(OptionSpec {
+            key: "crossover",
+            label_key: "opt-crossover",
+            help_key: "opt-crossover-hint",
+            kind: OptionKind::Float {
+                default: 0.0,
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+            },
+            scope: Scope::Methods(&["perturbation"]),
+        });
     }
 }
 static CROSSOVER_PLUGIN: CrossoverPlugin = CrossoverPlugin;
@@ -446,4 +582,42 @@ pub fn registry() -> &'static Registry {
         }
         reg
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_methods_registered() {
+        let reg = registry();
+        for id in ["nrpa", "perturbation", "systematic", "beam"] {
+            assert!(reg.method(id).is_some(), "method {id} missing");
+        }
+        assert!(reg.method("neural-nrpa").is_none(), "no experimental method on a core build");
+    }
+
+    #[test]
+    fn core_option_specs_present_with_defaults() {
+        let opts = registry().options();
+        let by = |k: &str| opts.iter().find(|o| o.key == k);
+        // The core tuning levers each contribute a spec.
+        for k in ["level", "width", "clamp", "alpha", "symmetry", "crossover"] {
+            assert!(by(k).is_some(), "option spec {k} missing");
+        }
+        // Defaults match the engine defaults (clamp C=3, symmetry on, crossover off).
+        assert!(matches!(by("clamp").unwrap().kind, OptionKind::Float { default, .. } if default == 3.0));
+        assert!(matches!(by("symmetry").unwrap().kind, OptionKind::Toggle { default: true }));
+        assert!(matches!(by("crossover").unwrap().kind, OptionKind::Float { default, .. } if default == 0.0));
+    }
+
+    #[test]
+    fn defaults_match_resolved_hooks() {
+        // The registry's resolved hook values equal the spec defaults when unset.
+        let reg = registry();
+        assert_eq!(reg.clamp(), Some(3.0));
+        assert_eq!(reg.alpha(), 1.0);
+        assert!(reg.sym_on());
+        assert_eq!(reg.crossover_rate(), 0.0);
+    }
 }
