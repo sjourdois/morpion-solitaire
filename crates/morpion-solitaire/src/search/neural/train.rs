@@ -28,7 +28,10 @@ pub struct TrainConfig {
 
 impl Default for TrainConfig {
     fn default() -> Self {
-        Self { epochs: 40, lr: 1e-3 }
+        Self {
+            epochs: 40,
+            lr: 1e-3,
+        }
     }
 }
 
@@ -122,9 +125,16 @@ pub fn train_value(
     for _epoch in 0..cfg.epochs {
         for chunk in samples.chunks(batch.max(1)) {
             let b = chunk.len();
-            let flat: Vec<f32> = chunk.iter().flat_map(|s| s.features.iter().copied()).collect();
+            let flat: Vec<f32> = chunk
+                .iter()
+                .flat_map(|s| s.features.iter().copied())
+                .collect();
             let x = Tensor::from_vec(flat, (b, VALUE_LEN), &device)?;
-            let tgt = Tensor::from_vec(chunk.iter().map(|s| s.target).collect::<Vec<_>>(), b, &device)?;
+            let tgt = Tensor::from_vec(
+                chunk.iter().map(|s| s.target).collect::<Vec<_>>(),
+                b,
+                &device,
+            )?;
             let loss = net.forward(&x)?.sub(&tgt)?.sqr()?.mean_all()?;
             opt.backward_step(&loss)?;
         }
@@ -143,7 +153,10 @@ pub fn value_mse(
     let mut n = 0usize;
     for chunk in samples.chunks(512) {
         let b = chunk.len();
-        let flat: Vec<f32> = chunk.iter().flat_map(|s| s.features.iter().copied()).collect();
+        let flat: Vec<f32> = chunk
+            .iter()
+            .flat_map(|s| s.features.iter().copied())
+            .collect();
         let Ok(x) = Tensor::from_vec(flat, (b, VALUE_LEN), device) else {
             continue;
         };
@@ -176,12 +189,34 @@ mod tests {
     fn training_improves_imitation_on_corpus() {
         let samples = samples_from_corpus(Variant::T5);
         assert!(!samples.is_empty());
-        let before = train(&samples, &TrainConfig { epochs: 0, lr: 1e-3 }, Device::Cpu).unwrap();
+        let before = train(
+            &samples,
+            &TrainConfig {
+                epochs: 0,
+                lr: 1e-3,
+            },
+            Device::Cpu,
+        )
+        .unwrap();
         let (loss0, acc0) = evaluate(&before, &samples);
-        let after = train(&samples, &TrainConfig { epochs: 8, lr: 1e-3 }, Device::Cpu).unwrap();
+        let after = train(
+            &samples,
+            &TrainConfig {
+                epochs: 8,
+                lr: 1e-3,
+            },
+            Device::Cpu,
+        )
+        .unwrap();
         let (loss1, acc1) = evaluate(&after, &samples);
         println!("imitation: loss {loss0:.3} -> {loss1:.3}, top1 {acc0:.3} -> {acc1:.3}");
-        assert!(loss1 < loss0, "training must reduce loss ({loss0} -> {loss1})");
-        assert!(acc1 > acc0 + 0.05, "training must lift top-1 ({acc0} -> {acc1})");
+        assert!(
+            loss1 < loss0,
+            "training must reduce loss ({loss0} -> {loss1})"
+        );
+        assert!(
+            acc1 > acc0 + 0.05,
+            "training must lift top-1 ({acc0} -> {acc1})"
+        );
     }
 }

@@ -82,7 +82,10 @@ fn samples_from_game_oriented(variant: Variant, history: &[Move], t: usize) -> V
         let Some(chosen) = legal.iter().position(|m| *m == mv) else {
             break;
         };
-        let moves = legal.iter().map(|m| encode_orientation(&st, m, t)).collect();
+        let moves = legal
+            .iter()
+            .map(|m| encode_orientation(&st, m, t))
+            .collect();
         out.push(StateSample {
             moves,
             chosen,

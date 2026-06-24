@@ -12,12 +12,12 @@
 //! search as `Action`s lives in `nrpa.rs` (next step).
 
 use super::move_playable; // the parent NRPA engine
-use crate::search::symmetry::{lin_transform, transform_dir};
 use crate::game::board::Pos;
 use crate::game::line::{Dir, Line};
 use crate::game::moves::Move;
 use crate::game::rules::Variant;
 use crate::game::state::GameState;
+use crate::search::symmetry::{lin_transform, transform_dir};
 use rustc_hash::FxHashMap;
 
 /// One move of a motif, **relative to the motif's anchor** (move 0's placed point):
@@ -123,7 +123,12 @@ impl Motif {
     pub fn signature(&self, n: i16) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325; // FNV-ish seed
         for m in &self.canonical(n).moves {
-            for v in [m.d.0 as i64 as u64, m.d.1 as i64 as u64, m.dir as u64, m.line_pos as u64] {
+            for v in [
+                m.d.0 as i64 as u64,
+                m.d.1 as i64 as u64,
+                m.dir as u64,
+                m.line_pos as u64,
+            ] {
                 h ^= v.wrapping_mul(0x9e3779b97f4a7c15);
                 h = h.rotate_left(13).wrapping_mul(0x100000001b3);
             }
@@ -140,7 +145,11 @@ impl Motif {
             .map(|rm| {
                 let trm = rm.transform(t, n as i16);
                 let pos = (a.0 + trm.d.0, a.1 + trm.d.1);
-                Move::new(pos, Line::from_point(pos, trm.dir, trm.line_pos, n), trm.line_pos)
+                Move::new(
+                    pos,
+                    Line::from_point(pos, trm.dir, trm.line_pos, n),
+                    trm.line_pos,
+                )
             })
             .collect()
     }
@@ -329,7 +338,11 @@ mod tests {
                         canon,
                         "k={k} t={t}: D4 image has a different canonical form"
                     );
-                    assert_eq!(img.signature(n), base.signature(n), "signature not D4-invariant");
+                    assert_eq!(
+                        img.signature(n),
+                        base.signature(n),
+                        "signature not D4-invariant"
+                    );
                 }
             }
         }
@@ -345,7 +358,10 @@ mod tests {
             for window in g.windows(k).take(30) {
                 let m = Motif::from_window(window);
                 let inst = m.instantiate(window[0].pos, 0, 5);
-                assert_eq!(inst, window, "k={k}: t=0 instantiation must equal the window");
+                assert_eq!(
+                    inst, window,
+                    "k={k}: t=0 instantiation must equal the window"
+                );
             }
         }
     }
@@ -365,11 +381,17 @@ mod tests {
             let anchor = g[0].pos;
             let inst = canon.instantiate(anchor, t, 5);
             let mut s = st.clone();
-            if inst.iter().all(|&mv| legal_moves(&s).contains(&mv) && s.apply(mv)) {
+            if inst
+                .iter()
+                .all(|&mv| legal_moves(&s).contains(&mv) && s.apply(mv))
+            {
                 ok += 1;
             }
         }
-        assert!(ok >= 1, "no orientation of the opening motif replays legally");
+        assert!(
+            ok >= 1,
+            "no orientation of the opening motif replays legally"
+        );
     }
 
     /// An empty library yields no macros (the library-size-0 ⇒ baseline property).
@@ -408,7 +430,9 @@ mod tests {
             for mi in &out {
                 let mut s = st.clone();
                 assert!(
-                    mi.moves.iter().all(|&m| legal_moves(&s).contains(&m) && s.apply(m)),
+                    mi.moves
+                        .iter()
+                        .all(|&m| legal_moves(&s).contains(&m) && s.apply(m)),
                     "enumerated macro not legal in sequence"
                 );
             }
@@ -424,7 +448,10 @@ mod tests {
         assert!(!mined.is_empty(), "no k=2 motifs mined");
         assert!(mined[0].1 >= 2, "top motif should recur (>=2)");
         // counts are sorted descending
-        assert!(mined.windows(2).all(|w| w[0].1 >= w[1].1), "not sorted by count");
+        assert!(
+            mined.windows(2).all(|w| w[0].1 >= w[1].1),
+            "not sorted by count"
+        );
         // top-N truncation works
         let lib = motif_library(Variant::T5, 2, 16);
         assert!(lib.len() <= 16 && !lib.is_empty());

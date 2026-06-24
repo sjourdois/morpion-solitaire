@@ -297,8 +297,7 @@ impl MorpionApp {
             // Don't restore a persisted experimental value unless the experimental
             // surface is enabled: a lab-only knob set in a past session must not
             // silently drive a normal run (the engine reads the values map directly).
-            if !experimental && crate::search::plugin::registry().is_option_experimental(spec.key)
-            {
+            if !experimental && crate::search::plugin::registry().is_option_experimental(spec.key) {
                 continue;
             }
             if let Some(v) = get(&format!("opt:{}", spec.key))
@@ -1536,7 +1535,10 @@ impl MorpionApp {
     }
 
     fn prior_busy(&self) -> bool {
-        matches!(self.neural.lock().unwrap().status, NeuralStatus::Training(_))
+        matches!(
+            self.neural.lock().unwrap().status,
+            NeuralStatus::Training(_)
+        )
     }
 
     /// Switch the prior source: stop any running training, reset shared state, disarm.
@@ -1712,7 +1714,10 @@ impl MorpionApp {
         let reg = crate::search::plugin::registry();
         // The root engine of the current selection (perturbation's root is nrpa).
         let cur_id = controls::algo_id(self.algo);
-        let cur_root = reg.method(cur_id).and_then(|m| m.parent()).unwrap_or(cur_id);
+        let cur_root = reg
+            .method(cur_id)
+            .and_then(|m| m.parent())
+            .unwrap_or(cur_id);
 
         // ── Engine tabs — one per ROOT method; variants are toggles below ────────
         ui.add_enabled_ui(!running, |ui| {
@@ -1806,15 +1811,18 @@ impl MorpionApp {
             // Perturbation needs a loaded game; continuing a finished game is a no-op.
             let can_start = match self.algo {
                 SearchAlgo::Perturbation => !self.state.history.is_empty(),
-                _ => !(self.start_point == StartPoint::Continue
-                    && !self.state.history.is_empty()
-                    && self.legal.is_empty()),
+                _ => {
+                    !(self.start_point == StartPoint::Continue
+                        && !self.state.history.is_empty()
+                        && self.legal.is_empty())
+                }
             };
-            let btn = egui::Button::new(
-                egui::RichText::new(fl!(l, "setup-start-search")).strong(),
-            );
+            let btn = egui::Button::new(egui::RichText::new(fl!(l, "setup-start-search")).strong());
             if ui
-                .add_enabled(can_start, btn.min_size(egui::vec2(ui.available_width(), 30.0)))
+                .add_enabled(
+                    can_start,
+                    btn.min_size(egui::vec2(ui.available_width(), 30.0)),
+                )
                 .clicked()
             {
                 self.request_search();
@@ -1830,7 +1838,11 @@ impl MorpionApp {
         ui.add_space(6.0);
         ui.label(egui::RichText::new(fl!(l, "start-point-label")).strong());
         if options.is_empty() {
-            ui.label(egui::RichText::new(fl!(l, "perturbation-hint")).weak().small());
+            ui.label(
+                egui::RichText::new(fl!(l, "perturbation-hint"))
+                    .weak()
+                    .small(),
+            );
             return;
         }
         let warm_available = !self.state.history.is_empty();
@@ -1853,7 +1865,11 @@ impl MorpionApp {
             });
         }
         if needs_game {
-            ui.label(egui::RichText::new(fl!(l, "start-needs-game")).weak().small());
+            ui.label(
+                egui::RichText::new(fl!(l, "start-needs-game"))
+                    .weak()
+                    .small(),
+            );
         }
     }
 
@@ -1868,7 +1884,14 @@ impl MorpionApp {
             }
             if let Some(d) = &mut self.stop_time {
                 let mut secs = d.as_secs();
-                if ui.add(egui::DragValue::new(&mut secs).range(1..=86_400).suffix(" s")).changed() {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut secs)
+                            .range(1..=86_400)
+                            .suffix(" s"),
+                    )
+                    .changed()
+                {
                     *d = Duration::from_secs(secs.max(1));
                 }
             }
@@ -1939,7 +1962,11 @@ impl MorpionApp {
                     if let Some(m) = &mut self.cfg_max_memory {
                         let mut mb = *m >> 20;
                         if ui
-                            .add(egui::DragValue::new(&mut mb).range(64..=1_048_576).suffix(" MB"))
+                            .add(
+                                egui::DragValue::new(&mut mb)
+                                    .range(64..=1_048_576)
+                                    .suffix(" MB"),
+                            )
                             .changed()
                         {
                             *m = mb.max(64) << 20;

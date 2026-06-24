@@ -322,7 +322,13 @@ mod tests {
             let mv = *legal
                 .iter()
                 .min_by_key(|m| {
-                    (m.pos.0, m.pos.1, m.line.origin.0, m.line.origin.1, m.line_pos)
+                    (
+                        m.pos.0,
+                        m.pos.1,
+                        m.line.origin.0,
+                        m.line.origin.1,
+                        m.line_pos,
+                    )
                 })
                 .unwrap();
             assert!(st.apply(mv));
@@ -330,7 +336,12 @@ mod tests {
             let inc: HashSet<Move> = next.iter().copied().collect();
             let full: HashSet<Move> = legal_moves(&st).into_iter().collect();
             assert_eq!(inc.len(), next.len(), "duplicate after {mv:?}");
-            assert_eq!(inc, full, "incremental != full at move {}", st.history.len());
+            assert_eq!(
+                inc,
+                full,
+                "incremental != full at move {}",
+                st.history.len()
+            );
             std::mem::swap(&mut legal, &mut next);
         }
     }

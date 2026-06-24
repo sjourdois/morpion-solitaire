@@ -21,9 +21,9 @@
 
 // Registry plugins co-located with this engine (the framework lives in `search::plugin`):
 // the NRPA-family core (method + adapt + symmetry coding), and perturbation + crossover.
-pub mod plugin;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perturbation;
+pub mod plugin;
 // Macro-actions (multi-move motifs mined from records) — an NRPA-only action-space lever
 // (the engine reads it in `island`). Native-only: it uses `move_playable`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -890,7 +890,15 @@ fn island(
         };
         #[cfg(not(target_arch = "wasm32"))]
         if use_macros {
-            macro_nrpa(level, n, &mut policy, &mut scratch, base_sym, search, macro_lib());
+            macro_nrpa(
+                level,
+                n,
+                &mut policy,
+                &mut scratch,
+                base_sym,
+                search,
+                macro_lib(),
+            );
         } else {
             nrpa(level, n, &mut policy, &mut scratch, base_sym, search);
         }
@@ -963,14 +971,22 @@ fn fill_step_weights(
     if let Some((fbuf, feat_table)) = feat {
         // φ-A (head-only) uses θ·φ alone; φ-B adds the one-hot table value.
         out.extend(moves.iter().enumerate().map(|(i, mv)| {
-            let w = if feat_table { wcode(i, mv).unwrap_or(0.0) } else { 0.0 };
+            let w = if feat_table {
+                wcode(i, mv).unwrap_or(0.0)
+            } else {
+                0.0
+            };
             ((w + fbuf[i]) * inv_temp).exp()
         }));
     } else if let Some(nbuf) = bias {
         out.extend(moves.iter().enumerate().map(|(i, mv)| {
             let nb = nbuf.get(i).copied().unwrap_or(0.0);
             let w = wcode(i, mv).unwrap_or(0.0);
-            let logit = if prior { w + nb + beta(scratch, mv.pos) } else { w + nb };
+            let logit = if prior {
+                w + nb + beta(scratch, mv.pos)
+            } else {
+                w + nb
+            };
             (logit * inv_temp).exp()
         }));
     } else {
@@ -1035,7 +1051,11 @@ fn playout(
         // the transcendental for them — the common case while the policy is sparse.
         // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
         // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
-        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
+        let coder = if sym_on {
+            sym.move_coder()
+        } else {
+            sym.move_coder_id()
+        };
         // Per-move auxiliary buffers: feature-space θ·φ (takes precedence), else the
         // neural bias. Then the shared logit builder fills `weights`.
         #[cfg(feature = "neural")]
@@ -1167,7 +1187,11 @@ fn adapt(
         // position; code each move once. Unseen codes contribute exp(0)=1 (β off).
         // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
         // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
-        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
+        let coder = if sym_on {
+            sym.move_coder()
+        } else {
+            sym.move_coder_id()
+        };
         codes.clear();
         codes.extend(moves.iter().map(|m| move_code(&coder, scratch, m, local)));
         // Per-move auxiliary buffers (feature-space θ·φ, else the neural bias), then the
@@ -1367,7 +1391,11 @@ fn macro_playout(
         }
         // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
         // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
-        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
+        let coder = if sym_on {
+            sym.move_coder()
+        } else {
+            sym.move_coder_id()
+        };
         // Action set: single moves first, then legal macros.
         codes.clear();
         codes.extend(moves.iter().map(|mv| move_code(&coder, scratch, mv, local)));
@@ -1478,7 +1506,11 @@ fn macro_adapt(
         }
         // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
         // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
-        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
+        let coder = if sym_on {
+            sym.move_coder()
+        } else {
+            sym.move_coder_id()
+        };
         codes.clear();
         codes.extend(moves.iter().map(|mv| move_code(&coder, scratch, mv, local)));
         insts.clear();
@@ -1549,7 +1581,10 @@ mod tests {
         assert!(!g.is_empty());
         let mut st = GameState::new(Variant::T5);
         for &mv in &g {
-            assert!(legal_moves(&st).contains(&mv), "crossover move illegal at replay");
+            assert!(
+                legal_moves(&st).contains(&mv),
+                "crossover move illegal at replay"
+            );
             assert!(st.apply(mv));
         }
         assert_eq!(st.history.len(), g.len());
