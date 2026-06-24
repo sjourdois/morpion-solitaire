@@ -27,8 +27,6 @@ pub struct StartCtx {
     pub seed_history: Vec<Move>,
     /// Length of the loaded game (for provenance).
     pub seed_len: usize,
-    /// Perturbation crossover rate (becomes a `PerturbModifier` in a later phase).
-    pub crossover: f64,
 }
 
 /// A runnable search method — one kind of plugin contribution. Implementors spawn
@@ -53,6 +51,7 @@ pub struct Registry {
     methods: Vec<&'static dyn Method>,
     coding: Option<&'static dyn CodingModifier>,
     adapt: Option<&'static dyn AdaptModifier>,
+    perturb: Option<&'static dyn PerturbModifier>,
 }
 
 impl Registry {
@@ -64,6 +63,9 @@ impl Registry {
     }
     pub fn add_adapt(&mut self, m: &'static dyn AdaptModifier) {
         self.adapt = Some(m);
+    }
+    pub fn add_perturb(&mut self, m: &'static dyn PerturbModifier) {
+        self.perturb = Some(m);
     }
     /// All registered methods, in registration (dependency) order.
     pub fn methods(&self) -> &[&'static dyn Method] {
@@ -85,6 +87,10 @@ impl Registry {
     pub fn alpha(&self) -> f64 {
         self.adapt.map_or(1.0, |a| a.alpha())
     }
+    /// Perturbation crossover rate (0 = off) — read once per perturbation round.
+    pub fn crossover_rate(&self) -> f64 {
+        self.perturb.map_or(0.0, |p| p.crossover_rate())
+    }
 }
 
 // ---- modifier hooks (resolved once per search) ----------------------------
@@ -97,6 +103,11 @@ pub trait CodingModifier: Sync {
 pub trait AdaptModifier: Sync {
     fn clamp(&self) -> Option<f64>;
     fn alpha(&self) -> f64;
+}
+/// Perturbation-round hook: probability a round recombines two archived games
+/// (`crossover_games`) instead of destroy/repair of one.
+pub trait PerturbModifier: Sync {
+    fn crossover_rate(&self) -> f64;
 }
 
 const F64_UNSET: u64 = u64::MAX; // f64-bits sentinel ⇒ "not set ⇒ default"
@@ -161,6 +172,33 @@ pub fn set_clamp(c: f64) {
 #[allow(dead_code)]
 pub fn set_alpha(a: f64) {
     CORE_ADAPT.alpha_bits.store(a.to_bits(), Ordering::Relaxed);
+}
+
+/// Core crossover modifier. Owns the `--crossover` rate (0 = off). Genetic
+/// recombination of archived games can reach combinations a single-game
+/// destroy/repair can't (the only perturbation lever with a positive signal).
+struct CoreCrossover {
+    rate_bits: AtomicU64,
+}
+impl PerturbModifier for CoreCrossover {
+    fn crossover_rate(&self) -> f64 {
+        let o = self.rate_bits.load(Ordering::Relaxed);
+        if o != F64_UNSET {
+            let r = f64::from_bits(o);
+            if (0.0..=1.0).contains(&r) {
+                return r;
+            }
+        }
+        0.0
+    }
+}
+static CORE_CROSSOVER: CoreCrossover = CoreCrossover {
+    rate_bits: AtomicU64::new(F64_UNSET),
+};
+
+#[allow(dead_code)]
+pub fn set_crossover(rate: f64) {
+    CORE_CROSSOVER.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
 }
 
 /// A plugin: a unit of contribution with dependencies. The core is itself plugins.
@@ -234,14 +272,11 @@ impl Method for Perturbation {
             level,
             variant,
             seed_history,
-            crossover,
             ..
         } = ctx;
-        std::thread::spawn(move || {
-            // The crossover rate is a per-thread override; set it on the loop's thread.
-            nrpa::set_crossover_override(crossover);
-            nrpa::run_perturbation(search, level, seed_history, variant);
-        });
+        // The crossover rate is a PerturbModifier resolved from the registry inside
+        // run_perturbation — set via `set_crossover` before launching.
+        std::thread::spawn(move || nrpa::run_perturbation(search, level, seed_history, variant));
     }
     fn method_desc(&self, ctx: &StartCtx) -> String {
         format!("perturbation L{}", ctx.level)
@@ -343,6 +378,22 @@ impl Plugin for AdaptPlugin {
 static SYMMETRY_PLUGIN: SymmetryPlugin = SymmetryPlugin;
 static ADAPT_PLUGIN: AdaptPlugin = AdaptPlugin;
 
+// Crossover modifies the perturbation method, so it depends on it: the plugin is
+// skipped (and `--crossover` has no effect) in a build without `perturbation`.
+struct CrossoverPlugin;
+impl Plugin for CrossoverPlugin {
+    fn id(&self) -> &'static str {
+        "crossover"
+    }
+    fn deps(&self) -> &'static [&'static str] {
+        &["perturbation"]
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_perturb(&CORE_CROSSOVER);
+    }
+}
+static CROSSOVER_PLUGIN: CrossoverPlugin = CrossoverPlugin;
+
 /// Every plugin compiled into this build: the core set, plus experimental ones
 /// appended under their feature in later phases.
 fn all_plugins() -> Vec<&'static dyn Plugin> {
@@ -354,6 +405,7 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
         &BEAM_PLUGIN,
         &SYMMETRY_PLUGIN,
         &ADAPT_PLUGIN,
+        &CROSSOVER_PLUGIN,
     ];
     // e.g. #[cfg(feature = "neural")] v.push(&NEURAL_PLUGIN); — later phases.
     v
