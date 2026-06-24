@@ -2,22 +2,31 @@
 //!
 //! A **plugin** is a generic contribution unit (a method, a modifier of a search at a
 //! named hook, an option, UI) with **dependencies** on other plugins. The core itself
-//! is expressed as plugins; experimental ones register only under their Cargo feature.
-//! The CLI and GUI dispatch through the [`Registry`] and name no specific plugin.
+//! is expressed as plugins, split logically by method and modifier under this module:
+//! one file per plugin (`nrpa/`, `perturbation/`, `systematic`, `beam`, `puct/`), with a
+//! method's modifiers as its submodules (e.g. `nrpa/{symmetry,adapt,macros,…}`). The CLI
+//! and GUI dispatch through the [`Registry`] and name no specific plugin.
 //!
-//! In place: the `Plugin`/`Registry`/`Method` scaffolding + core method plugins; the
-//! `CodingModifier`/`AdaptModifier`/`PerturbModifier` hooks (presence markers) resolved
-//! once per search into a scalar — no per-node cost; declarative [`OptionSpec`]s; and the
-//! **values map** ([`OptionValue`] per key) that is the single source of truth the CLI
-//! and GUI write and the engine reads. The dynamic CLI and generic GUI both render from
-//! the specs and push values through [`Registry::set_value`] — naming no specific plugin.
+//! The framework itself lives here: the `Plugin`/`Method`/`*Modifier` traits, the
+//! hooks (presence markers resolved once per search into a scalar — no per-node cost),
+//! declarative [`OptionSpec`]s, and the **values map** ([`OptionValue`] per key) — the
+//! single source of truth the CLI/GUI write and the engine reads. Adding a plugin is one
+//! file plus a line in [`all_plugins`].
+
+mod beam;
+mod nrpa;
+mod systematic;
+#[cfg(not(target_arch = "wasm32"))]
+mod perturbation;
+#[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
+mod puct;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::game::{moves::Move, rules::Variant, state::GameState};
 
-use super::{beam, nrpa, systematic, SearchState};
+use super::SearchState;
 
 /// Resolved launch context: the start position and the seed material a method needs.
 pub struct StartCtx {
@@ -238,9 +247,9 @@ pub fn set_option(key: &str, val: OptionValue) {
 
 // ---- modifier hooks (presence markers) ------------------------------------
 //
-// State now lives in the registry's values map; a modifier trait marks that a plugin
-// owns a hook and is compiled into this build. The registry resolves the hook from
-// the map, gated by the slot's presence.
+// State lives in the registry's values map; a modifier trait marks that a plugin owns
+// a hook and is compiled into this build. The registry resolves the hook from the map,
+// gated by the slot's presence.
 
 /// Move-bias hook: a per-move, log-space bias added into the NRPA softmax (β in the
 /// policy logit). A neural prior is the canonical implementor. Called once per state
@@ -264,27 +273,6 @@ pub trait AdaptModifier: Sync {}
 /// Perturbation-round hook: probability a round recombines two archived games
 /// (`crossover_games`) instead of destroy/repair of one.
 pub trait PerturbModifier: Sync {}
-
-/// Core symmetry modifier (owns `--symmetry`/`--no-symmetry`). On (default): canonical
-/// D4 coding, all 8 Zobrist hashes maintained. Off: identity frame only (one hash),
-/// ~+16% throughput at neutral score — for cold record runs.
-struct CoreCoding;
-impl CodingModifier for CoreCoding {}
-static CORE_CODING: CoreCoding = CoreCoding;
-
-/// Core adapt modifier (owns `--clamp`/`--alpha`). The logit clamp (Stabilized-NRPA)
-/// is on by default at C=3 (tight sweet spot; 5T L4/120 s ~112 vs ~95 unclamped);
-/// `--clamp 0` disables. α default 1.0 (0.5/2.0 regressed unclamped).
-struct CoreAdapt;
-impl AdaptModifier for CoreAdapt {}
-static CORE_ADAPT: CoreAdapt = CoreAdapt;
-
-/// Core crossover modifier (owns `--crossover`, 0 = off). Genetic recombination of
-/// archived games can reach combinations a single-game destroy/repair can't (the only
-/// perturbation lever with a positive signal).
-struct CoreCrossover;
-impl PerturbModifier for CoreCrossover {}
-static CORE_CROSSOVER: CoreCrossover = CoreCrossover;
 
 // ---- declarative options --------------------------------------------------
 
@@ -392,371 +380,32 @@ pub trait Plugin: Sync {
     fn register(&self, reg: &mut Registry);
 }
 
-// ---- core method plugins --------------------------------------------------
-
-struct Nrpa;
-impl Method for Nrpa {
-    fn id(&self) -> &'static str {
-        "nrpa"
-    }
-    fn label_key(&self) -> &'static str {
-        "algo-nrpa"
-    }
-    fn spawn(&self, ctx: StartCtx, search: Arc<SearchState>) {
-        let StartCtx {
-            initial,
-            level,
-            warm_seq,
-            ..
-        } = ctx;
-        match warm_seq {
-            Some(seq) => {
-                std::thread::spawn(move || {
-                    nrpa::run_warm(&initial, search, level, &seq, nrpa::WARM_ITERS)
-                });
-            }
-            None => {
-                std::thread::spawn(move || nrpa::run(&initial, search, level));
-            }
-        }
-    }
-    fn method_desc(&self, ctx: &StartCtx) -> String {
-        if ctx.warm_seq.is_some() {
-            format!(
-                "nrpa-seeded L{} warm-from={} warm={}",
-                ctx.level, ctx.seed_len, nrpa::WARM_ITERS
-            )
-        } else {
-            format!("nrpa L{}", ctx.level)
-        }
-    }
-    fn checkpoint_kind(&self) -> Option<&'static str> {
-        Some("nrpa")
-    }
-}
-
-// Perturbation drives time-bounded inner NRPA searches via OS threads
-// (`nrpa::run_perturbation`), which is native-only — so the whole method plugin is
-// gated off wasm. The crossover modifier depends on it, so on wasm the dependency
-// resolver drops crossover too (a nice end-to-end check of the dep mechanism).
-#[cfg(not(target_arch = "wasm32"))]
-struct Perturbation;
-#[cfg(not(target_arch = "wasm32"))]
-impl Method for Perturbation {
-    fn id(&self) -> &'static str {
-        "perturbation"
-    }
-    fn parent(&self) -> Option<&'static str> {
-        Some("nrpa") // a large-neighbourhood variant of NRPA, not a standalone engine
-    }
-    fn label_key(&self) -> &'static str {
-        "algo-perturbation"
-    }
-    fn spawn(&self, ctx: StartCtx, search: Arc<SearchState>) {
-        let StartCtx {
-            level,
-            variant,
-            seed_history,
-            ..
-        } = ctx;
-        // The crossover rate is a PerturbModifier resolved from the registry inside
-        // run_perturbation — set via the values map before launching.
-        std::thread::spawn(move || nrpa::run_perturbation(search, level, seed_history, variant));
-    }
-    fn method_desc(&self, ctx: &StartCtx) -> String {
-        format!("perturbation L{}", ctx.level)
-    }
-    fn checkpoint_kind(&self) -> Option<&'static str> {
-        Some("perturbation")
-    }
-}
-
-struct Systematic;
-impl Method for Systematic {
-    fn id(&self) -> &'static str {
-        "systematic"
-    }
-    fn label_key(&self) -> &'static str {
-        "algo-systematic"
-    }
-    fn spawn(&self, ctx: StartCtx, search: Arc<SearchState>) {
-        let initial = ctx.initial;
-        std::thread::spawn(move || systematic::run(&initial, search));
-    }
-    fn method_desc(&self, _ctx: &StartCtx) -> String {
-        "systematic".to_owned()
-    }
-    fn checkpoint_kind(&self) -> Option<&'static str> {
-        Some("systematic")
-    }
-}
-
-struct BeamMethod;
-impl Method for BeamMethod {
-    fn id(&self) -> &'static str {
-        "beam"
-    }
-    fn label_key(&self) -> &'static str {
-        "algo-beam"
-    }
-    fn spawn(&self, ctx: StartCtx, search: Arc<SearchState>) {
-        let StartCtx { initial, width, .. } = ctx;
-        std::thread::spawn(move || beam::run(&initial, search, width));
-    }
-    fn method_desc(&self, ctx: &StartCtx) -> String {
-        format!("beam w={}", ctx.width)
-    }
-    fn checkpoint_kind(&self) -> Option<&'static str> {
-        None
-    }
-}
-
-static NRPA: Nrpa = Nrpa;
-#[cfg(not(target_arch = "wasm32"))]
-static PERTURBATION: Perturbation = Perturbation;
-static SYSTEMATIC: Systematic = Systematic;
-static BEAM: BeamMethod = BeamMethod;
-
-// Each core method is wrapped in a plugin (no deps). Experimental method/modifier
-// plugins append to `all_plugins` under their Cargo feature in later phases.
-macro_rules! core_method_plugin {
-    ($plugin:ident, $id:literal, $method:expr) => {
-        struct $plugin;
-        impl Plugin for $plugin {
-            fn id(&self) -> &'static str {
-                $id
-            }
-            fn register(&self, reg: &mut Registry) {
-                reg.add_method($method);
-            }
-        }
-    };
-}
-#[cfg(not(target_arch = "wasm32"))]
-core_method_plugin!(PerturbationPlugin, "perturbation", &PERTURBATION);
-core_method_plugin!(SystematicPlugin, "systematic", &SYSTEMATIC);
-
-struct NrpaPlugin;
-impl Plugin for NrpaPlugin {
-    fn id(&self) -> &'static str {
-        "nrpa"
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_method(&NRPA);
-        // Nesting level applies to the whole NRPA family (perturbation wraps NRPA).
-        reg.add_option(OptionSpec {
-            key: "level",
-            label_key: "opt-level",
-            help_key: "opt-level-hint",
-            help: "NRPA nesting level (recursion depth). 3 is the fast default; 4+ \
-                   searches more deeply but only pays off over long runs.",
-            kind: OptionKind::Int {
-                default: 3,
-                min: 1,
-                max: 6,
-            },
-            scope: Scope::NrpaFamily,
-        });
-    }
-}
-
-struct BeamPlugin;
-impl Plugin for BeamPlugin {
-    fn id(&self) -> &'static str {
-        "beam"
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_method(&BEAM);
-        reg.add_option(OptionSpec {
-            key: "width",
-            label_key: "opt-width",
-            help_key: "opt-width-hint",
-            help: "Beam width (kept candidates per depth).",
-            kind: OptionKind::Int {
-                default: 64,
-                min: 1,
-                max: 100_000,
-            },
-            scope: Scope::Methods(&["beam"]),
-        });
-    }
-}
-
-static NRPA_PLUGIN: NrpaPlugin = NrpaPlugin;
-#[cfg(not(target_arch = "wasm32"))]
-static PERTURBATION_PLUGIN: PerturbationPlugin = PerturbationPlugin;
-static SYSTEMATIC_PLUGIN: SystematicPlugin = SystematicPlugin;
-static BEAM_PLUGIN: BeamPlugin = BeamPlugin;
-
-// Core modifier plugins (apply to the NRPA family).
-struct SymmetryPlugin;
-impl Plugin for SymmetryPlugin {
-    fn id(&self) -> &'static str {
-        "symmetry"
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_coding(&CORE_CODING);
-        reg.add_option(OptionSpec {
-            key: "symmetry",
-            label_key: "opt-symmetry",
-            help_key: "opt-symmetry-hint",
-            help: "Drop symmetry-invariant move coding (identity frame only): ~+16% \
-                   throughput at neutral score — recommended for cold record runs \
-                   without warm-start. (The flag is `--no-symmetry`.)",
-            kind: OptionKind::Toggle { default: true },
-            scope: Scope::NrpaFamily,
-        });
-    }
-}
-struct AdaptPlugin;
-impl Plugin for AdaptPlugin {
-    fn id(&self) -> &'static str {
-        "adapt"
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_adapt(&CORE_ADAPT);
-        reg.add_option(OptionSpec {
-            key: "clamp",
-            label_key: "opt-clamp",
-            help_key: "opt-clamp-hint",
-            help: "Stabilized-NRPA logit clamp C (default 3; 0 disables clamping). The \
-                   tight sweet spot for record hunting; only re-tune for experiments.",
-            kind: OptionKind::Float {
-                default: 3.0,
-                min: 0.0,
-                max: 10.0,
-                step: 0.5,
-            },
-            scope: Scope::NrpaFamily,
-        });
-        reg.add_option(OptionSpec {
-            key: "alpha",
-            label_key: "opt-alpha",
-            help_key: "opt-alpha-hint",
-            help: "Policy adaptation step size α (default 1.0).",
-            kind: OptionKind::Float {
-                default: 1.0,
-                min: 0.1,
-                max: 3.0,
-                step: 0.05,
-            },
-            scope: Scope::NrpaFamily,
-        });
-    }
-}
-static SYMMETRY_PLUGIN: SymmetryPlugin = SymmetryPlugin;
-static ADAPT_PLUGIN: AdaptPlugin = AdaptPlugin;
-
-// Crossover modifies the perturbation method, so it depends on it: the plugin is
-// skipped (and `--crossover` has no effect) in a build without `perturbation`.
-struct CrossoverPlugin;
-impl Plugin for CrossoverPlugin {
-    fn id(&self) -> &'static str {
-        "crossover"
-    }
-    fn deps(&self) -> &'static [&'static str] {
-        &["perturbation"]
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_perturb(&CORE_CROSSOVER);
-        reg.add_option(OptionSpec {
-            key: "crossover",
-            label_key: "opt-crossover",
-            help_key: "opt-crossover-hint",
-            help: "Perturbation genetic-crossover rate (0 = off). Only used by \
-                   `--algo perturbation`.",
-            kind: OptionKind::Float {
-                default: 0.0,
-                min: 0.0,
-                max: 1.0,
-                step: 0.05,
-            },
-            scope: Scope::Methods(&["perturbation"]),
-        });
-    }
-}
-static CROSSOVER_PLUGIN: CrossoverPlugin = CrossoverPlugin;
-
-// Macro-actions: NRPA also samples multi-move motifs mined from records (5T only).
-// Native-only (the macro path uses `nrpa::move_playable`); contributes options only,
-// the engine reads them once per search in `island`.
-#[cfg(not(target_arch = "wasm32"))]
-struct MacrosPlugin;
-#[cfg(not(target_arch = "wasm32"))]
-impl Plugin for MacrosPlugin {
-    fn id(&self) -> &'static str {
-        "macros"
-    }
-    fn experimental(&self) -> bool {
-        true
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_option(OptionSpec {
-            key: "macros",
-            label_key: "opt-macros",
-            help_key: "opt-macros-hint",
-            help: "Macro-actions: NRPA also picks multi-move motifs mined from records \
-                   (5T only), composing over a coarser horizon. Experimental.",
-            kind: OptionKind::Toggle { default: false },
-            scope: Scope::Methods(&["nrpa"]),
-        });
-        reg.add_option(OptionSpec {
-            key: "macro-k",
-            label_key: "opt-macro-k",
-            help_key: "opt-macro-k-hint",
-            help: "Macro motif length in moves (default 2). Read once at first use.",
-            kind: OptionKind::Int {
-                default: 2,
-                min: 1,
-                max: 6,
-            },
-            scope: Scope::Methods(&["nrpa"]),
-        });
-        reg.add_option(OptionSpec {
-            key: "macro-topn",
-            label_key: "opt-macro-topn",
-            help_key: "opt-macro-topn-hint",
-            help: "Macro library size: keep the top-N most frequent motifs (0 = all, \
-                   default 32). Read once at first use.",
-            kind: OptionKind::Int {
-                default: 32,
-                min: 0,
-                max: 100_000,
-            },
-            scope: Scope::Methods(&["nrpa"]),
-        });
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-static MACROS_PLUGIN: MacrosPlugin = MacrosPlugin;
-
-/// Every plugin compiled into this build: the core set, plus experimental ones
-/// appended under their feature in later phases.
+/// Every plugin compiled into this build, in a sensible registration order (the
+/// dependency resolver in [`registry`] re-orders as needed). Adding a plugin = one new
+/// file plus one line here.
 fn all_plugins() -> Vec<&'static dyn Plugin> {
     #[allow(unused_mut)]
     let mut v: Vec<&'static dyn Plugin> = vec![
-        &NRPA_PLUGIN,
-        &SYSTEMATIC_PLUGIN,
-        &BEAM_PLUGIN,
-        &SYMMETRY_PLUGIN,
-        &ADAPT_PLUGIN,
-        // Crossover declares a dependency on "perturbation"; on wasm (where perturbation
-        // is absent) the resolver drops it automatically.
-        &CROSSOVER_PLUGIN,
+        &nrpa::NRPA_PLUGIN,
+        &systematic::SYSTEMATIC_PLUGIN,
+        &beam::BEAM_PLUGIN,
+        &nrpa::symmetry::SYMMETRY_PLUGIN,
+        &nrpa::adapt::ADAPT_PLUGIN,
     ];
-    // Perturbation is native-only (OS threads); on wasm it isn't compiled in.
+    // Perturbation (OS threads) + its crossover modifier + macros are native-only.
     #[cfg(not(target_arch = "wasm32"))]
-    v.push(&PERTURBATION_PLUGIN);
-    // Macro-actions (native-only): contributes the macros options for the nrpa method.
-    #[cfg(not(target_arch = "wasm32"))]
-    v.push(&MACROS_PLUGIN);
-    // The experimental neural prior (feature `neural`, native-only): a BiasModifier
-    // depending on nrpa. Absent ⇒ no bias hook, no --neural-scale option.
+    {
+        v.push(&perturbation::PERTURBATION_PLUGIN);
+        v.push(&perturbation::crossover::CROSSOVER_PLUGIN);
+        v.push(&nrpa::macros::MACROS_PLUGIN);
+    }
+    // The neural prior + feature-space head + PUCT (feature `neural`, native-only).
     #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
-    v.push(&crate::search::neural::NEURAL_PLUGIN);
-    // PUCT method (policy+value tree search), same feature gate.
-    #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
-    v.push(&crate::search::neural::PUCT_PLUGIN);
+    {
+        v.push(&nrpa::neural_bias::NEURAL_BIAS_PLUGIN);
+        v.push(&nrpa::feature_space::FEATURE_SPACE_PLUGIN);
+        v.push(&puct::PUCT_PLUGIN);
+    }
     v
 }
 
