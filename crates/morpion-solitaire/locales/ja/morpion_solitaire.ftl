@@ -158,6 +158,16 @@ opt-feat-adapt = 特徴空間 NRPA
 opt-feat-adapt-hint = 固定の事前バイアスの代わりに、ネットの凍結特徴上のヘッドをオンライン適応（φ-B）。事前分布が必要。実験的。
 opt-feat-alpha = 特徴空間ステップ (α_θ)
 opt-feat-alpha-hint = 特徴空間 NRPA のヘッドのステップ幅。既定 0.1。有効時のみ。
+opt-feat-table = ポリシー表を保持 (φ-B)
+opt-feat-table-hint = θ·φ と並んで one-hot ポリシー表を保持 (φ-B)。オフ → ヘッドのみ φ-A。特徴空間有効時のみ。
+opt-feat-warm = ヘッドを温起動
+opt-feat-warm-hint = 温起動 θ₀ = スケール·ヘッド。ステップ 0 で prior を再現。オフ → 冷起動 (θ₀ = 0)。特徴空間有効時のみ。
+opt-feat-lambda = ヘッドの L2 減衰 λ
+opt-feat-lambda-hint = 各適応後に L2 減衰 θ ← (1−λ)θ。既定 0 = オフ。特徴空間有効時のみ。
+opt-feat-clamp = ヘッドのクランプ C
+opt-feat-clamp-hint = 各適応後に |θ_j| ≤ C をクランプ。既定 0 = オフ。特徴空間有効時のみ。
+opt-feat-norm = φ を正規化
+opt-feat-norm-hint = キャッシュ済み φ を L2 で長さ 1 に正規化。温起動の再現性を壊す。冷起動掃引向け。特徴空間有効時のみ。
 opt-macros = マクロ手
 opt-macros-hint = NRPA が記録から抽出した複数手モチーフも選択（5T のみ）。実験的。
 opt-macro-k = マクロ長 (k)

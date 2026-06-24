@@ -158,6 +158,16 @@ opt-feat-adapt = Feature-ruimte-NRPA
 opt-feat-adapt-hint = Past online een kop aan over de bevroren netwerk-features (φ-B) in plaats van een vaste prior-bias. Vereist een prior. Experimenteel.
 opt-feat-alpha = Feature-ruimte-stap (α_θ)
 opt-feat-alpha-hint = Stapgrootte van de kop voor feature-ruimte-NRPA. Standaard 0.1. Alleen indien actief.
+opt-feat-table = Policy-tabel behouden (φ-B)
+opt-feat-table-hint = One-hot policy-tabel naast θ·φ behouden (φ-B). Uit → alleen-kop φ-A. Alleen met feature-ruimte.
+opt-feat-warm = Kop warm initialiseren
+opt-feat-warm-hint = Warm-init θ₀ = schaal·kop, reproduceert de prior bij stap 0. Uit → koud (θ₀ = 0). Alleen met feature-ruimte.
+opt-feat-lambda = Kop-L2-verval λ
+opt-feat-lambda-hint = L2-verval θ ← (1−λ)θ na elke aanpassing. Standaard 0 = uit. Alleen met feature-ruimte.
+opt-feat-clamp = Kop-begrenzing C
+opt-feat-clamp-hint = Begrenst |θ_j| ≤ C na elke aanpassing. Standaard 0 = uit. Alleen met feature-ruimte.
+opt-feat-norm = φ normaliseren
+opt-feat-norm-hint = Normaliseer (L2) elke gecachte φ naar lengte 1. Breekt warm-reproductie; voor koude-init-sweeps. Alleen met feature-ruimte.
 opt-macros = Macro-acties
 opt-macros-hint = NRPA kiest ook meerzet-motieven uit records (alleen 5T). Experimenteel.
 opt-macro-k = Macrolengte (k)
