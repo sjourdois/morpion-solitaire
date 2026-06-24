@@ -72,10 +72,11 @@ level 4 and above search far more deeply per run but only pay off over multi-hou
 sessions.
 
 The adapted policy logits are **clamped** to a small bound (a Stabilized-NRPA
-variant, on by default; `NRPA_CLAMP=0` disables) so the policy cannot run away and
-over-commit. This both raises the typical score and cuts its run-to-run variance,
-and the gain *grows* with the search budget rather than capping (5T level-4
-mean-best went from ~95 unclamped to ~112 clamped in tuning).
+variant, on by default; set `--clamp 0`, or the clamp slider to 0 in the GUI, to
+disable) so the policy cannot run away and over-commit. This both raises the typical
+score and cuts its run-to-run variance, and the gain *grows* with the search budget
+rather than capping (5T level-4 mean-best went from ~95 unclamped to ~112 clamped in
+tuning).
 
 ## Perturbation (large-neighbourhood) search
 
@@ -94,6 +95,56 @@ plain hill-climb collapses onto one local optimum, whereas the archive preserves
 promising-but-different lines so the search can escape and recombine them. It runs
 its inner NRPA searches across OS threads, so it is **native-only** — the web
 build omits it (browsers can't spawn the same thread pool).
+
+## Experimental methods
+
+A second tier of engines and tuning knobs is **off by default** and revealed only
+with the global `--experimental` flag on the CLI, or the *Experimental engines &
+options* toggle in the GUI's search setup. These are research levers: more moving
+parts, a heavier build, and no guarantee of beating the defaults above. The neural
+ones need a build with the `neural` feature and run **native-only** (CPU inference);
+the web build omits them.
+
+### Neural move prior
+
+A small network scores each candidate move from a fixed-size view of its local
+neighbourhood, and that score is added into NRPA's softmax as a log-space bias —
+nudging sampling toward the moves the net favours. Arm it with `search --prior
+<source>`, where the source is the shipped `bundled` prior, `corpus` (train on the
+record corpus first), `scratch` (train on the bundled from-scratch corpus), or a
+path to a safetensors file; `--neural-scale` sets the bias strength. Only the NRPA
+family reads it.
+
+You can also train one **from scratch, with no human games**, using the
+`tabula-rasa` command — cold-start Expert Iteration: an NRPA seed, prior-guided
+perturbation, retrain on the elite, repeat — and save the result for `--prior`.
+
+### Feature-space NRPA
+
+Instead of a frozen per-move bias, freeze the net's penultimate **features** φ(s,m)
+and adapt a linear head θ over them *online during the search*: the per-move logit
+becomes θ·φ, and one update moves **every** move sharing features — the in-search
+generalization a one-hot policy table cannot give. Turn it on with `--feat-adapt`
+(a prior must be armed); `--feat-alpha` sets the head step. The default keeps the
+one-hot table alongside θ·φ; advanced knobs switch to a head-only variant
+(`--no-feat-table`), cold initialization (`--no-feat-warm`), L2 decay
+(`--feat-lambda`), a head clamp (`--feat-clamp`) and φ normalization (`--feat-norm`).
+
+### Macro-actions
+
+NRPA can pick, in one step, a `k`-move **motif** mined from the record corpus
+instead of a single move — raising the action granularity so the policy composes
+over a shorter horizon. Enable with `--macros`; `--macro-k` sets the motif length
+and `--macro-topn` how many of the most frequent motifs to offer. 5T only.
+
+### PUCT
+
+A policy + value **tree search** (`--algo puct`): one tree grown by repeated
+simulations that descend by the PUCT rule, expand a leaf with the policy prior, and
+back up either a policy-guided rollout's length or a value net's estimate. Arm the
+policy with `--prior` (without one it runs as uniform-rollout MCTS) and, optionally,
+a value net from the `train-value` command via `--value-net <file>`. It guides whole
+*lines* through a position value rather than per-move imitation.
 
 ## Record-hunting workflow
 

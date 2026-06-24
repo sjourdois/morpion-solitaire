@@ -119,10 +119,9 @@ pub struct Rung {
 /// **and the elite it trained on** (the from-scratch corpus).
 ///
 /// Round 0 seeds a diverse elite with plain NRPA from the empty cross. From round 1
-/// on, each round runs prior-guided **perturbation** on the best elite games —
-/// perturbation lifts them past NRPA's from-cross ceiling, the lifted games re-enter
-/// the elite, the prior retrains on the better elite, and the next round lifts higher
-/// still (NRPA → perturbation → NRPA → …).
+/// on, each round runs prior-guided **perturbation** (large-neighbourhood search) on
+/// the best elite games; improved games re-enter the elite, the prior retrains on the
+/// better elite, and the next round works from there (NRPA → perturbation → NRPA → …).
 ///
 /// `cancel` lets a caller stop early (a CLI signal): it is polled during each search
 /// and between rounds; on cancel the loop returns the best prior trained so far.
@@ -170,9 +169,9 @@ pub fn train(
                 break;
             }
             // Round 0 (no elite yet) seeds with plain NRPA from the empty cross. From
-            // round 1 on, the prior-guided PERTURBATION lifts the best elite games
-            // past NRPA's from-cross ceiling. Each island perturbs a different top
-            // game for diversity; the prior guides the inner-NRPA repairs.
+            // round 1 on, the prior-guided PERTURBATION reworks the best elite games
+            // (large-neighbourhood search). Each island perturbs a different top game
+            // for diversity; the prior guides the inner-NRPA repairs.
             let g = if round == 0 || elite.is_empty() {
                 generate_one(cfg.variant, cfg.level, per, cancel)
             } else {

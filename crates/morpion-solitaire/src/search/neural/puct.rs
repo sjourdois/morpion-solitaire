@@ -1,6 +1,6 @@
 //! PUCT (policy + value) tree search for single-player Morpion — the policy+value
-//! line that might exceed NRPA's static-prior ~147 plateau by guiding whole *lines*
-//! (a position value), not just per-move imitation.
+//! line: it guides whole *lines* through a position value, not just per-move
+//! imitation of the policy prior.
 //!
 //! One tree, grown by repeated simulations: descend by PUCT
 //! (`Q + c·P·√ΣN/(1+n)`), expand the leaf with the policy net's move priors, and

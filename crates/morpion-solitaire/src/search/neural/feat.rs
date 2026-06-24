@@ -1,5 +1,5 @@
-//! Feature-space NRPA (`docs/feature-space-nrpa.md`) — the adaptive head θ over the
-//! net's frozen penultimate features φ(s,m).
+//! Feature-space NRPA — the adaptive head θ over the net's frozen penultimate
+//! features φ(s,m).
 //!
 //! Instead of a frozen scalar bias `β = scale·net(s,m)`, freeze the net's penultimate
 //! representation φ(s,m) (the `[h]`-dim activation) and adapt a linear head θ over it

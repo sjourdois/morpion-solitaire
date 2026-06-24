@@ -1,11 +1,8 @@
 //! Macro-actions for NRPA — multi-move motifs mined from record games.
 //!
-//! The decisive feature-space gate (`docs/feature-space-nrpa.md`) showed that
-//! adapting the *prior* over local features does not break the ~147 wall: the
-//! bottleneck is **composition**, not the prior. Macro-actions raise the action
-//! granularity — NRPA picks, in one step, a `k`-move **motif** known to be good
-//! (mined from the optimal-ish record corpus) — so it composes over a shorter
-//! horizon. See `docs/macro-actions.md`.
+//! Macro-actions raise the action granularity: NRPA picks, in one step, a `k`-move
+//! **motif** (mined from the record corpus) instead of a single move, so the policy
+//! composes over a shorter horizon. An experimental lever, off by default.
 //!
 //! This module is the **offline mining + the motif representation**. A motif is
 //! stored **relative to its anchor** (move 0's placed point) and **D4-canonical**

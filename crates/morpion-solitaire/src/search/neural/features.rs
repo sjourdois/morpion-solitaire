@@ -1,8 +1,8 @@
 //! Feature encoding of a `(state, move)` pair for the neural move prior.
 //!
-//! The network that supplies NRPA's GNRPA bias `β(state, move)` (see
-//! `docs/neural-guide.md`) consumes a **fixed-length** description of the *local
-//! geometry* around a candidate move — the generalization of
+//! The network that supplies NRPA's GNRPA bias `β(state, move)` consumes a
+//! **fixed-length** description of the *local geometry* around a candidate move —
+//! the generalization of
 //! `symmetry::local_code`'s 8-neighbour ring to a square patch — so a prior learned
 //! at one location transfers to every position sharing the local pattern (like
 //! `corpus_prior`, of which this is the parametric superset).
@@ -12,7 +12,7 @@
 //! cells belong to the line this move draws) — plus two scalars (game progress,
 //! local density).
 //!
-//! **D4 symmetry — two modes, selectable by [`canonicalize`] (`NRPA_NEURAL_CANON`).**
+//! **D4 symmetry — two modes, selected by [`canonicalize`].**
 //! By default (off) the runtime [`encode`] emits a single (natural) orientation —
 //! cheap — and the net is trained on all eight [`encode_orientation`] images so it
 //! learns approximate invariance. With the knob on, the encoder instead folds each
@@ -193,7 +193,7 @@ pub fn encode(state: &GameState, mv: &Move) -> Vec<f32> {
 /// planes in natural orientation. Two `(state, move)` pairs with the same key have
 /// the same features (scalars aside) and so the same neural prior — which lets a
 /// search **cache** the prior per local pattern instead of re-running the net for
-/// every node (lazy NN→table distillation; see `docs/neural-guide.md`). Symmetric
+/// every node (lazy NN→table distillation). Symmetric
 /// patterns get *different* keys here (no canonical fold), but the net returns ~the
 /// same β for them, so the only cost is a slightly lower cache hit rate.
 pub type PatchKey = (u128, u128);
