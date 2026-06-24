@@ -17,6 +17,7 @@ pub mod dataset;
 pub mod embedded;
 pub mod features;
 pub mod net;
+pub mod tabula_rasa;
 pub mod train;
 
 use std::sync::{Arc, OnceLock, RwLock};
@@ -40,6 +41,18 @@ fn armed() -> &'static RwLock<Option<Arc<NeuralPrior>>> {
 /// Is a prior currently armed? (Read at search start to decide the hot-loop path.)
 pub fn is_armed() -> bool {
     armed().read().unwrap().is_some()
+}
+
+/// Set the prior strength (β scale) for subsequent searches by writing the registry's
+/// `neural-scale` option — the same value the [`NeuralBias`] reads. Used by tabula-rasa
+/// to anneal the scale across Expert-Iteration rounds.
+pub fn set_scale(scale: f64) {
+    plugin::registry().set_value("neural-scale", plugin::OptionValue::Float(scale));
+}
+
+/// Restore the default prior strength (see [`set_scale`]).
+pub fn reset_scale() {
+    set_scale(DEFAULT_SCALE);
 }
 
 /// The registry's neural move-bias modifier: encodes each candidate move locally,
