@@ -582,6 +582,9 @@ pub(crate) fn render_search_options(ui: &mut Ui, algo: SearchAlgo, enabled: bool
         if !spec.scope.applies_to(id) {
             continue;
         }
+        if !reg.option_visible(spec.key) {
+            continue; // experimental option, hidden unless enabled
+        }
         if !shown {
             ui.add_space(6.0);
             shown = true;

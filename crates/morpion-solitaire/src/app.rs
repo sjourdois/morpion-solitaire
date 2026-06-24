@@ -189,6 +189,9 @@ pub struct MorpionApp {
     pending_search: bool,
     /// Whether the floating search-setup overlay is open (engine tabs, options, Start).
     search_setup_open: bool,
+    /// Whether experimental (lab-only) engines & options are surfaced. Mirrors the
+    /// plugin registry's global flag; persisted and re-applied on load.
+    experimental: bool,
     /// Stop criteria (any reached ⇒ stop). `None` = unbounded on that axis. Enforced
     /// each frame in the update loop, mirroring the CLI's `--time/--target-score/--max-nodes`.
     stop_time: Option<Duration>,
@@ -265,6 +268,10 @@ impl MorpionApp {
         let view_arrows = get_bool("view_arrows", true);
         let view_numbers = get_bool("view_numbers", true);
         let show_legal = get_bool("show_legal", true);
+        // Experimental surface: restore the persisted choice into the registry's
+        // global gate before any tab/option rendering reads it.
+        let experimental = get_bool("experimental", false);
+        crate::search::plugin::set_experimental(experimental);
         // Enums persist as JSON; each parse is its own expression so the target
         // type is inferred independently from the fallback.
         let input_mode = get("input_mode")
@@ -370,6 +377,7 @@ impl MorpionApp {
             #[cfg(feature = "neural")]
             pending_search: false,
             search_setup_open: false,
+            experimental,
             stop_time: None,
             stop_score: None,
             stop_nodes: None,
@@ -1706,6 +1714,9 @@ impl MorpionApp {
                     if m.parent().is_some() {
                         continue; // a variant (e.g. perturbation) — shown as a toggle
                     }
+                    if !reg.method_visible(m.id()) {
+                        continue; // experimental engine, hidden unless enabled
+                    }
                     let Some(algo) = controls::algo_from_id(m.id()) else {
                         continue;
                     };
@@ -1728,6 +1739,9 @@ impl MorpionApp {
             for m in reg.methods() {
                 if m.parent() != Some(cur_root) {
                     continue;
+                }
+                if !reg.method_visible(m.id()) {
+                    continue; // experimental variant, hidden unless enabled
                 }
                 let Some(child) = controls::algo_from_id(m.id()) else {
                     continue;
@@ -1878,6 +1892,21 @@ impl MorpionApp {
     fn setup_advanced(&mut self, ui: &mut egui::Ui, running: bool) {
         let l = &*LANGUAGE_LOADER;
         ui.add_enabled_ui(!running, |ui| {
+            // Experimental surface: reveals lab-only engines (PUCT) & options (macros,
+            // neural feature-space knobs). Mirrors the CLI `--experimental` flag.
+            if ui
+                .checkbox(&mut self.experimental, fl!(l, "adv-experimental"))
+                .on_hover_text(fl!(l, "adv-experimental-hint"))
+                .changed()
+            {
+                crate::search::plugin::set_experimental(self.experimental);
+                // Turning it off can hide the current engine — fall back to NRPA.
+                let cur = controls::algo_id(self.algo);
+                if !crate::search::plugin::registry().method_visible(cur) {
+                    self.algo = SearchAlgo::Nrpa;
+                    self.coerce_start_point();
+                }
+            }
             // Threads.
             let mut on = self.cfg_threads.is_some();
             ui.horizontal(|ui| {
@@ -1919,6 +1948,9 @@ impl MorpionApp {
         if self.selected_variant != Variant::T5 {
             args.push(format!("--variant {}", self.selected_variant.name()));
         }
+        if self.experimental {
+            args.push("--experimental".to_owned());
+        }
         args.push("search".to_owned());
         let id = controls::algo_id(self.algo);
         if self.algo != SearchAlgo::Nrpa {
@@ -1926,7 +1958,7 @@ impl MorpionApp {
         }
         // Engine options in scope, when off their default — straight from the specs.
         for spec in reg.options() {
-            if !spec.scope.applies_to(id) {
+            if !spec.scope.applies_to(id) || !reg.option_visible(spec.key) {
                 continue;
             }
             match (spec.kind, reg.value(spec.key)) {
@@ -2043,6 +2075,7 @@ impl eframe::App for MorpionApp {
         set("view_arrows", self.view_arrows.to_string());
         set("view_numbers", self.view_numbers.to_string());
         set("show_legal", self.show_legal.to_string());
+        set("experimental", self.experimental.to_string());
         // Persist the engine-tuning option values (rendered generically from the
         // registry); restored in `new`.
         for spec in crate::search::plugin::registry().options() {

@@ -38,6 +38,12 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "5T", value_name = "5T|5D|4T|4D")]
     variant: String,
 
+    /// Enable experimental (lab-only) engines and tuning options — e.g. `--algo puct`,
+    /// `--macros`, the neural feature-space knobs. Off by default; they're hidden and
+    /// rejected without this flag.
+    #[arg(long, global = true)]
+    experimental: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -354,10 +360,25 @@ fn build_command() -> clap::Command {
 /// Push the dynamically-parsed engine options into the registry's values map. A toggle
 /// defaulting *on* is flagged as `--no-<key>` (opt-out ⇒ set false); a default-off
 /// toggle sets true. Only options the user actually passed overwrite the seeded default.
-fn apply_search_options(sub: &clap::ArgMatches) {
+/// An experimental option passed without `--experimental` is an error (the flag gates
+/// the whole lab-only surface, so this matches the GUI hiding it).
+fn apply_search_options(sub: &clap::ArgMatches) -> Result<(), String> {
     use crate::search::plugin::{registry, OptionKind, OptionValue};
     let reg = registry();
     for spec in reg.options() {
+        // Did the user pass this flag? (No clap default is set, so a value is present
+        // only when supplied; a SetTrue toggle is true only when supplied.)
+        let passed = match spec.kind {
+            OptionKind::Toggle { .. } => sub.get_flag(spec.key),
+            OptionKind::Float { .. } => sub.get_one::<f64>(spec.key).is_some(),
+            OptionKind::Int { .. } => sub.get_one::<i64>(spec.key).is_some(),
+        };
+        if passed && !reg.option_visible(spec.key) {
+            return Err(format!(
+                "--{} is experimental; pass --experimental to enable it",
+                spec.cli_flag()
+            ));
+        }
         match spec.kind {
             OptionKind::Toggle { default } => {
                 if sub.get_flag(spec.key) {
@@ -376,6 +397,7 @@ fn apply_search_options(sub: &clap::ArgMatches) {
             }
         }
     }
+    Ok(())
 }
 
 /// Parse the CLI. Returns `None` when the GUI should run (no subcommand or
@@ -383,11 +405,17 @@ fn apply_search_options(sub: &clap::ArgMatches) {
 pub fn dispatch() -> Option<()> {
     use clap::FromArgMatches;
     let matches = build_command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // The global --experimental flag gates the lab-only surface; set it before the
+    // dynamic options are validated/applied and before any method dispatch.
+    crate::search::plugin::set_experimental(cli.experimental);
     // Apply the dynamic engine options into the registry before running the search.
     if let Some(sub) = matches.subcommand_matches("search") {
-        apply_search_options(sub);
+        if let Err(e) = apply_search_options(sub) {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
     }
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let variant = parse_variant_or_exit(&cli.variant);
     match cli.command {
         None | Some(Command::Gui) => None, // hand back to the GUI
@@ -423,6 +451,7 @@ fn run(cmd: Command, variant: Variant) -> Result<(), String> {
 
 fn cmd_search(mut a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    reject_experimental_algo(a.algo.id())?;
 
     // --run-dir: gather all run outputs under one dir (only fills unset paths).
     if let Some(dir) = a.run_dir.clone() {
@@ -867,6 +896,7 @@ fn cmd_records(a: RecordsArgs) -> Result<(), String> {
 }
 
 fn cmd_bench(a: BenchArgs, variant: Variant) -> Result<(), String> {
+    reject_experimental_algo(a.algo.id())?;
     let search = SearchState::new();
     let s = search.clone();
     let level = a.level;
@@ -989,6 +1019,16 @@ fn cmd_train_value(a: TrainValueArgs, variant: Variant) -> Result<(), String> {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+/// Reject an experimental `--algo` unless `--experimental` was passed (the flag is
+/// already wired into the registry's visibility gate by [`dispatch`]).
+fn reject_experimental_algo(id: &str) -> Result<(), String> {
+    if crate::search::plugin::registry().method_visible(id) {
+        Ok(())
+    } else {
+        Err(format!("--algo {id} is experimental; pass --experimental to enable it"))
+    }
+}
 
 fn handle_overflow(a: &SearchArgs, variant: Variant, best: u32) {
     let grid = crate::game::board::GRID;
