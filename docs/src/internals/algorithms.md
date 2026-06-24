@@ -27,9 +27,10 @@ position is reached exactly once:
    first symmetry-breaking move, so the saving is largest near the root where the
    tree is widest.
 
-A branch-and-bound layer then prunes any branch whose admissible upper bound
-cannot beat the incumbent; the theoretical length limits \[Demaine2006] are the
-backdrop for those bounds. For 4D and 4T the whole tree can be drained, which
+These two exact layers are the whole pruning strategy — there is no heuristic
+branch-and-bound; correctness rests only on never discarding a reachable
+position. The theoretical length limits \[Demaine2006] are the backdrop for what
+the search can hope to reach. For 4D and 4T the whole tree can be drained, which
 **proves the optimum** (35 and 62 respectively): when the frontier empties on its
 own, `SearchState::exhausted` is set and the app reports the elapsed time and that
 the score is optimal. For 5T/5D the space is far too large to exhaust, so the
