@@ -85,6 +85,7 @@ impl OptionValue {
 #[derive(Default)]
 pub struct Registry {
     methods: Vec<&'static dyn Method>,
+    bias: Option<&'static dyn BiasModifier>,
     coding: Option<&'static dyn CodingModifier>,
     adapt: Option<&'static dyn AdaptModifier>,
     perturb: Option<&'static dyn PerturbModifier>,
@@ -97,6 +98,10 @@ pub struct Registry {
 impl Registry {
     pub fn add_method(&mut self, m: &'static dyn Method) {
         self.methods.push(m);
+    }
+    #[allow(dead_code)] // used by the neural plugin (feature-gated)
+    pub fn add_bias(&mut self, m: &'static dyn BiasModifier) {
+        self.bias = Some(m);
     }
     pub fn add_coding(&mut self, m: &'static dyn CodingModifier) {
         self.coding = Some(m);
@@ -126,6 +131,12 @@ impl Registry {
     /// Look up a method by its id (the CLI `--algo` value).
     pub fn method(&self, id: &str) -> Option<&'static dyn Method> {
         self.methods.iter().copied().find(|m| m.id() == id)
+    }
+    /// The active move-bias modifier (e.g. a neural prior), if any plugin contributed
+    /// one. Resolved once at search start; the hot loop branches on the `Option`, so a
+    /// core build (no bias plugin) pays nothing.
+    pub fn bias_modifier(&self) -> Option<&'static dyn BiasModifier> {
+        self.bias
     }
 
     // ---- the values map (single source of truth) --------------------------
@@ -223,6 +234,15 @@ pub fn set_option(key: &str, val: OptionValue) {
 // State now lives in the registry's values map; a modifier trait marks that a plugin
 // owns a hook and is compiled into this build. The registry resolves the hook from
 // the map, gated by the slot's presence.
+
+/// Move-bias hook: a per-move, log-space bias added into the NRPA softmax (β in the
+/// policy logit). A neural prior is the canonical implementor. Called once per state
+/// per playout/adapt step on every island thread, so it must be cheap (or internally
+/// cached) and must never panic — fill `out` with one bias per move in `moves` order,
+/// or leave it cleared (treated as all-zero) on error.
+pub trait BiasModifier: Sync {
+    fn biases(&self, state: &GameState, moves: &[Move], out: &mut Vec<f64>);
+}
 
 /// Move-coding hook: symmetry-invariant (canonical D4) coding vs the identity frame.
 pub trait CodingModifier: Sync {}
