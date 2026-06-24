@@ -131,3 +131,5 @@ opt-alpha = ステップ幅 (α)
 opt-alpha-hint = 方策の適応ステップ。既定は 1.0。実験時のみ調整。
 opt-crossover = 交叉率
 opt-crossover-hint = 摂動のみ：1 ラウンドが破壊・修復の代わりに 2 つの保存済みゲームを組み換える確率。0 = 無効。
+opt-neural-scale = ニューラル事前分布の強さ
+opt-neural-scale-hint = ニューラル手事前分布の β スケール。最適値は約 4。事前分布を読み込んだ場合のみ有効。

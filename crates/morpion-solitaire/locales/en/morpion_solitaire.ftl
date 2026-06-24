@@ -131,3 +131,5 @@ opt-alpha = Step size (α)
 opt-alpha-hint = Policy adaptation step. 1.0 is the default; only re-tune for experiments.
 opt-crossover = Crossover rate
 opt-crossover-hint = Perturbation only: chance a round recombines two archived games instead of destroy/repair. 0 = off.
+opt-neural-scale = Neural prior strength
+opt-neural-scale-hint = β scale for the neural move prior; sweet spot ≈ 4. Only applies when a prior is loaded.

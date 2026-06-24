@@ -131,3 +131,5 @@ opt-alpha = Passo di adattamento (α)
 opt-alpha-hint = Passo di adattamento della policy. 1.0 di default; modificalo solo per esperimenti.
 opt-crossover = Tasso di crossover
 opt-crossover-hint = Solo perturbazione: probabilità che un round ricombini due partite archiviate invece di distruggere/riparare. 0 = disattivato.
+opt-neural-scale = Forza del prior neurale
+opt-neural-scale-hint = Scala β del prior neurale delle mosse; ottimo ≈ 4. Si applica solo con un prior caricato.

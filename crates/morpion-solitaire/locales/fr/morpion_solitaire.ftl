@@ -131,3 +131,5 @@ opt-alpha = Pas d'apprentissage (α)
 opt-alpha-hint = Pas d'adaptation de la politique. 1.0 par défaut ; à ne régler que pour des expériences.
 opt-crossover = Taux de croisement
 opt-crossover-hint = Perturbation uniquement : probabilité qu'un tour recombine deux parties archivées au lieu de détruire/réparer. 0 = désactivé.
+opt-neural-scale = Force du prior neuronal
+opt-neural-scale-hint = Échelle β du prior neuronal de coups ; optimum ≈ 4. Ne s’applique qu’avec un prior chargé.

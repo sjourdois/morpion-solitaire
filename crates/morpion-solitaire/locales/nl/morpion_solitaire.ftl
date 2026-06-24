@@ -131,3 +131,5 @@ opt-alpha = Stapgrootte (α)
 opt-alpha-hint = Aanpassingsstap van het beleid. Standaard 1.0; alleen bijstellen voor experimenten.
 opt-crossover = Crossover-percentage
 opt-crossover-hint = Alleen perturbatie: kans dat een ronde twee gearchiveerde spellen hercombineert in plaats van vernietigen/herstellen. 0 = uit.
+opt-neural-scale = Sterkte van de neurale prior
+opt-neural-scale-hint = β-schaal van de neurale zet-prior; optimaal ≈ 4. Alleen van toepassing met een geladen prior.

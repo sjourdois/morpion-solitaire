@@ -929,8 +929,9 @@ fn playout(
     let reg = crate::search::plugin::registry();
     let sym_on = reg.sym_on();
     // Active move-bias modifier (e.g. a neural prior), resolved once: the hot loop
-    // branches on this `Option`, so a core build (no bias plugin) pays nothing.
-    let bias = reg.bias_modifier();
+    // branches on this `Option`, so a core build (no bias plugin) — or a registered
+    // but unarmed one — pays nothing.
+    let bias = reg.bias_modifier().filter(|b| b.active());
     // Buffers reused across every step of this playout (cleared per step) so the
     // hottest loop in the search does no per-node heap allocation.
     let mut moves: Vec<Move> = Vec::new();
@@ -1058,7 +1059,7 @@ fn adapt(
         None => reg.clamp(),
     };
     let alpha = reg.alpha();
-    let bias = reg.bias_modifier();
+    let bias = reg.bias_modifier().filter(|b| b.active());
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
     let mut moves: Vec<Move> = Vec::new();

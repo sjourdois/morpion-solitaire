@@ -241,6 +241,12 @@ pub fn set_option(key: &str, val: OptionValue) {
 /// cached) and must never panic — fill `out` with one bias per move in `moves` order,
 /// or leave it cleared (treated as all-zero) on error.
 pub trait BiasModifier: Sync {
+    /// Whether the modifier is currently armed. Resolved once at search start: when
+    /// false the engine takes its no-bias fast path, so a registered-but-unarmed
+    /// modifier (e.g. the neural plugin with no prior loaded) costs nothing.
+    fn active(&self) -> bool {
+        true
+    }
     fn biases(&self, state: &GameState, moves: &[Move], out: &mut Vec<f64>);
 }
 
@@ -678,7 +684,10 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
     // Perturbation is native-only (OS threads); on wasm it isn't compiled in.
     #[cfg(not(target_arch = "wasm32"))]
     v.push(&PERTURBATION_PLUGIN);
-    // e.g. #[cfg(feature = "neural")] v.push(&NEURAL_PLUGIN); — later phases.
+    // The experimental neural prior (feature `neural`, native-only): a BiasModifier
+    // depending on nrpa. Absent ⇒ no bias hook, no --neural-scale option.
+    #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
+    v.push(&crate::search::neural::NEURAL_PLUGIN);
     v
 }
 
