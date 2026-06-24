@@ -13,9 +13,11 @@
 //! inference core (features, the policy net, the bundled prior) and the bias plugin;
 //! training, PUCT and tabula-rasa land in later phase-5 commits.
 
+pub mod dataset;
 pub mod embedded;
 pub mod features;
 pub mod net;
+pub mod train;
 
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -103,10 +105,54 @@ pub static NEURAL_PLUGIN: NeuralPlugin = NeuralPlugin;
 /// use. The search infers on CPU (per-state, many threads), so a prior is always
 /// loaded on CPU. (Training entry points land in a later phase-5 commit.)
 pub mod prior {
+    use super::dataset::{augmented_samples_from_corpus, augmented_samples_from_games, StateSample};
     use super::net::NeuralPrior;
+    use super::train::{train, TrainConfig};
     use super::{armed, Arc};
+    use crate::game::moves::Move;
     use crate::game::rules::Variant;
     use candle_core::Device;
+
+    /// Train on `samples`, then round-trip the net through a temp safetensors so the
+    /// returned prior holds plain (non-`Var`) CPU tensors — safe for the concurrent
+    /// per-island inference in the hot loop. A freshly trained net keeps trainable
+    /// `Var`s that aren't sound to share across island threads; the round-trip strips
+    /// them. Shared by every `train_on_*`.
+    fn train_and_freeze(samples: &[StateSample], epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+        let pr = train(samples, &TrainConfig { epochs, lr }, Device::Cpu)?;
+        let tmp = std::env::temp_dir().join(format!("morpion_prior_{}.safetensors", std::process::id()));
+        let tmps = tmp.to_string_lossy().into_owned();
+        pr.save(&tmps)?;
+        let loaded = NeuralPrior::load(&tmps, Device::Cpu);
+        let _ = std::fs::remove_file(&tmp);
+        loaded
+    }
+
+    /// Train a move prior on the human record corpus (D4-augmented), on CPU. ~40 s
+    /// for the h64 net; the result is ready to [`arm`]/[`install`] or [`save`].
+    pub fn train_on_corpus(variant: Variant, epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+        train_and_freeze(&augmented_samples_from_corpus(variant), epochs, lr)
+    }
+
+    /// Train a move prior on a set of games (D4-augmented), on CPU — the tabula-rasa
+    /// path: only games the search produced, no human records. `games` must be
+    /// non-empty (an empty set trains nothing useful).
+    pub fn train_on_games(variant: Variant, games: &[Vec<Move>], epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+        train_and_freeze(&augmented_samples_from_games(variant, games), epochs, lr)
+    }
+
+    /// Train a move prior on the **embedded from-scratch corpus** for `variant` (the
+    /// bundled self-found games — no human records), on CPU. Errors if none committed.
+    pub fn train_on_bundled_corpus(variant: Variant, epochs: usize, lr: f64) -> candle_core::Result<NeuralPrior> {
+        let games = super::embedded::corpus(variant);
+        if games.is_empty() {
+            return Err(candle_core::Error::Msg(format!(
+                "no bundled from-scratch corpus for {} yet",
+                variant.name()
+            )));
+        }
+        train_on_games(variant, &games, epochs, lr)
+    }
 
     /// The bundled pre-trained from-scratch prior for `variant`, if one is committed
     /// (instant — no training). See [`super::embedded`].
@@ -163,5 +209,33 @@ mod tests {
 
         prior::arm(None);
         assert!(!is_armed());
+    }
+
+    /// The train→freeze (save→reload) round-trip yields a usable prior: train on a
+    /// couple of short self-played games and check it produces finite per-move biases.
+    /// Fast (tiny set, 1 epoch) — it guards the freeze path `train_on_*` all use.
+    #[test]
+    fn trained_prior_round_trips() {
+        let mut games = Vec::new();
+        for _ in 0..2 {
+            let mut st = GameState::new(Variant::T5);
+            let mut h = Vec::new();
+            for _ in 0..12 {
+                let ms = legal_moves(&st);
+                if ms.is_empty() {
+                    break;
+                }
+                h.push(ms[0]);
+                st.apply(ms[0]);
+            }
+            games.push(h);
+        }
+        let p = prior::train_on_games(Variant::T5, &games, 1, 1e-3).expect("train");
+        let st = GameState::new(Variant::T5);
+        let moves = legal_moves(&st);
+        let feats: Vec<Vec<f32>> = moves.iter().map(|m| features::encode(&st, m)).collect();
+        let b = net::MovePrior::biases(&p, &feats);
+        assert_eq!(b.len(), moves.len());
+        assert!(b.iter().all(|x| x.is_finite()));
     }
 }

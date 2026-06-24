@@ -106,12 +106,21 @@ struct SearchArgs {
     // from the plugin option registry (see `augment_search_options`) and applied into
     // the registry's values map before dispatch (`apply_search_options`). Adding a
     // plugin option is then purely additive — no edit to this struct.
-    /// Neural move prior (feature `neural`): `bundled` (the shipped from-scratch prior)
-    /// or a path to a safetensors file. Biases NRPA's softmax; set strength with
-    /// `--neural-scale`. Only the NRPA family uses it.
+    /// Neural move prior (feature `neural`): `bundled` (the shipped from-scratch
+    /// prior, instant), `corpus` (train on the human records, ~40 s), `scratch` (train
+    /// on the bundled from-scratch corpus), or a path to a safetensors file. Biases
+    /// NRPA's softmax; set strength with `--neural-scale`. Only the NRPA family uses it.
     #[cfg(feature = "neural")]
-    #[arg(long, value_name = "bundled|FILE")]
+    #[arg(long, value_name = "bundled|corpus|scratch|FILE")]
     prior: Option<String>,
+    /// Epochs for `--prior corpus|scratch` (default 40).
+    #[cfg(feature = "neural")]
+    #[arg(long, value_name = "N", default_value_t = 40)]
+    prior_epochs: usize,
+    /// Save the loaded/trained prior to this safetensors file (then keep searching).
+    #[cfg(feature = "neural")]
+    #[arg(long, value_name = "FILE")]
+    save_prior: Option<PathBuf>,
     /// Perturbation destroy-size lower bound K_min (default 8). `--algo perturbation`.
     #[arg(long, value_name = "K")]
     kmin: Option<usize>,
@@ -573,16 +582,37 @@ fn spawn_search(
         .unwrap_or(cli_variant);
 
     // Arm the neural move prior (feature `neural`) before any search thread starts, so
-    // every island reads it. `bundled` is the shipped prior; otherwise a file path.
+    // every island reads it. `bundled` loads the shipped prior; `corpus`/`scratch`
+    // train one (CPU); anything else is a safetensors path.
     #[cfg(feature = "neural")]
     if let Some(spec) = &a.prior {
-        let p = if spec == "bundled" {
-            crate::search::neural::prior::bundled(variant)
-                .ok_or_else(|| format!("no bundled prior for {}", variant.name()))?
-        } else {
-            crate::search::neural::prior::load(spec).map_err(|e| e.to_string())?
+        use crate::search::neural::prior;
+        const LR: f64 = 1e-3;
+        let ep = a.prior_epochs;
+        let p = match spec.as_str() {
+            "bundled" => prior::bundled(variant)
+                .ok_or_else(|| format!("no bundled prior for {}", variant.name()))?,
+            "corpus" | "train" => {
+                if !a.quiet {
+                    eprintln!("training prior on the record corpus ({ep} epochs)…");
+                }
+                prior::train_on_corpus(variant, ep, LR).map_err(|e| e.to_string())?
+            }
+            "scratch" => {
+                if !a.quiet {
+                    eprintln!("training prior on the bundled from-scratch corpus ({ep} epochs)…");
+                }
+                prior::train_on_bundled_corpus(variant, ep, LR).map_err(|e| e.to_string())?
+            }
+            path => prior::load(path).map_err(|e| e.to_string())?,
         };
-        crate::search::neural::prior::install(Some(p));
+        if let Some(out) = &a.save_prior {
+            prior::save(&p, &out.to_string_lossy()).map_err(|e| e.to_string())?;
+            if !a.quiet {
+                eprintln!("saved prior to {}", out.display());
+            }
+        }
+        prior::install(Some(p));
         log::info!("neural prior armed ({spec})");
     }
 
