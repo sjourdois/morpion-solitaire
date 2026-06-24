@@ -14,7 +14,7 @@ to S3 and safe across spot reclaims (auto-resume).
 ## Usage
 
 ```bash
-cd deploy/aws
+cd tools/deploy/aws
 ./coldrun.sh build        # cross-compile the headless aarch64 binary
 ./coldrun.sh setup        # S3 bucket + IAM + launch template (uploads the binary)
 ./coldrun.sh launch       # create the spot fleet (maintain, capacity-optimized, multi-AZ)

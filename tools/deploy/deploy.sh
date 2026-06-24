@@ -58,13 +58,13 @@ while true; do case "$1" in
 esac; done
 
 P="aws --profile $PROFILE --region $REGION"
-BIN="${BIN:-$HERE/../target/aarch64-unknown-linux-gnu/release/morpion-solitaire}"
+BIN="${BIN:-$HERE/../../target/aarch64-unknown-linux-gnu/release/morpion-solitaire}"
 ACCT="$($P sts get-caller-identity --query Account --output text)"
 BUCKET="${BUCKET:-ms-recordhunt-$ACCT}"
 AMI="${AMI:-$($P ssm get-parameters --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64 --query 'Parameters[0].Value' --output text)}"
 
 echo ">> region=$REGION run=$RUN_ID capacity=$CAPACITY types=[$TYPES] bucket=$BUCKET ami=$AMI"
-[ -f "$BIN" ] || { echo "!! binary not found: $BIN  (build it: see docs/neural-guide.md)"; exit 1; }
+[ -f "$BIN" ] || { echo "!! binary not found: $BIN  (build it: see tools/deploy/README.md)"; exit 1; }
 
 echo ">> uploading artifacts to s3://$BUCKET/$RUN_ID/bin/"
 $P s3 cp "$BIN" "s3://$BUCKET/$RUN_ID/bin/morpion-solitaire" --only-show-errors
@@ -163,6 +163,6 @@ LT_NAME=$LT_NAME
 SG=$SG
 KEY=$KEY
 EOF
-echo ">> state saved: deploy/.state-$RUN_ID"
-echo ">> monitor:  deploy/monitor.sh --run-id $RUN_ID"
-echo ">> teardown: deploy/teardown.sh --run-id $RUN_ID"
+echo ">> state saved: tools/deploy/.state-$RUN_ID"
+echo ">> monitor:  tools/deploy/monitor.sh --run-id $RUN_ID"
+echo ">> teardown: tools/deploy/teardown.sh --run-id $RUN_ID"
