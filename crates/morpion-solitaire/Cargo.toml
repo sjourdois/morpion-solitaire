@@ -47,6 +47,8 @@ sys-locale = "0.3"
 num_cpus = "1"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
+# Safe wrapper for nice(2) (the crate forbids unsafe), for `search --nice`.
+rustix = { version = "1", features = ["process"] }
 resvg = "0.47"          # rasterise the SVG renderer to PNG (CLI `show --png`)
 # Native-only export: a system save dialog and image-capable clipboard. The web
 # build keeps to text-clipboard export (the library carries no browser API).
