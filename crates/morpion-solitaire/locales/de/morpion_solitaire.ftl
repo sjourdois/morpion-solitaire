@@ -164,3 +164,19 @@ opt-macro-k = Makro-Länge (k)
 opt-macro-k-hint = Züge pro Motiv (Standard 2). Bei erster Nutzung angewandt.
 opt-macro-topn = Makro-Bibliotheksgröße
 opt-macro-topn-hint = Die N häufigsten Motive behalten (0 = alle; Standard 32).
+
+# Search-setup overlay
+search-configure = ⚙ Suche konfigurieren…
+search-configure-hint = Engine, Optionen, Prior, Stoppkriterien
+stop-criteria = Stoppkriterien
+stop-after = Stoppen nach
+stop-at-score = Stoppen bei Score
+stop-nodes = Stoppen nach Knoten
+adv-header = Erweitert
+adv-threads = Threads
+adv-max-memory = Max. Speicher
+adv-ignore-overflow = Gitterüberlauf ignorieren
+setup-cli-command = Äquivalenter CLI-Befehl
+setup-copy-command = Befehl kopieren
+setup-running-note = Eine Suche läuft — Stoppkriterien greifen jetzt; andere Änderungen beim nächsten Lauf.
+setup-start-search = ▶  Suche starten

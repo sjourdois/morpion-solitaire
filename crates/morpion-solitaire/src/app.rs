@@ -187,6 +187,20 @@ pub struct MorpionApp {
     /// A search deferred until the prior finishes building (feature `neural`).
     #[cfg(feature = "neural")]
     pending_search: bool,
+    /// Whether the floating search-setup overlay is open (engine tabs, options, Start).
+    search_setup_open: bool,
+    /// Stop criteria (any reached ⇒ stop). `None` = unbounded on that axis. Enforced
+    /// each frame in the update loop, mirroring the CLI's `--time/--target-score/--max-nodes`.
+    stop_time: Option<Duration>,
+    stop_score: Option<u32>,
+    stop_nodes: Option<u64>,
+    /// Worker threads (`--threads`; `None` = all cores). Best-effort (the rayon pool is
+    /// built once per session).
+    cfg_threads: Option<usize>,
+    /// Soft RAM budget in bytes (`--max-memory`; bounds an NRPA island's policy).
+    cfg_max_memory: Option<u64>,
+    /// Keep searching past a grid overflow instead of stopping (`--ignore-overflow`).
+    cfg_ignore_overflow: bool,
 }
 
 /// The editorial (free, human-curated) metadata fields the user can edit. Held as
@@ -355,6 +369,13 @@ impl MorpionApp {
             neural_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(feature = "neural")]
             pending_search: false,
+            search_setup_open: false,
+            stop_time: None,
+            stop_score: None,
+            stop_nodes: None,
+            cfg_threads: None,
+            cfg_max_memory: None,
+            cfg_ignore_overflow: false,
         }
     }
 
@@ -1265,6 +1286,19 @@ impl MorpionApp {
         self.last_checkpoint = Instant::now();
         self.exhausted_seen = false;
         let s = SearchState::new();
+        // Operational config from the overlay's Advanced section (mirrors the CLI).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(n) = self.cfg_threads {
+            let _ = rayon::ThreadPoolBuilder::new()
+                .num_threads(n.max(1))
+                .build_global();
+        }
+        if let Some(bytes) = self.cfg_max_memory {
+            const PER_ENTRY: u64 = 64; // ~bytes per policy entry incl. overhead
+            let islands = self.cfg_threads.unwrap_or_else(num_cpus_hint).max(1) as u64;
+            let cap = (bytes / (islands * PER_ENTRY)).max(1) as usize;
+            s.max_policy_entries.store(cap, Ordering::Relaxed);
+        }
         let s2 = s.clone();
         let algo = self.algo;
         let level = crate::search::plugin::registry().level();
@@ -1630,6 +1664,375 @@ impl MorpionApp {
     }
 }
 
+impl MorpionApp {
+    /// Keep the chosen start point valid for the current algorithm.
+    fn coerce_start_point(&mut self) {
+        if !controls::start_points_for(self.algo).contains(&self.start_point) {
+            self.start_point = StartPoint::Empty;
+        }
+    }
+
+    /// The floating search-setup overlay: engine tabs, per-engine options (generic from
+    /// the plugin registry), start point, prior, stop criteria, advanced resources, the
+    /// equivalent CLI line, and Start. The board stays visible behind it.
+    fn search_setup_window(&mut self, ctx: &egui::Context) {
+        if !self.search_setup_open {
+            return;
+        }
+        let mut open = self.search_setup_open;
+        egui::Window::new(fl!(LANGUAGE_LOADER, "search-section"))
+            .id(egui::Id::new("search_setup_window"))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(430.0)
+            .show(ctx, |ui| self.search_setup_body(ui));
+        // Respect both the window X (open=false) and a programmatic close (Start).
+        self.search_setup_open = self.search_setup_open && open;
+    }
+
+    fn search_setup_body(&mut self, ui: &mut egui::Ui) {
+        let l = &*LANGUAGE_LOADER;
+        let running = self.search_running();
+
+        let reg = crate::search::plugin::registry();
+        // The root engine of the current selection (perturbation's root is nrpa).
+        let cur_id = controls::algo_id(self.algo);
+        let cur_root = reg.method(cur_id).and_then(|m| m.parent()).unwrap_or(cur_id);
+
+        // ── Engine tabs — one per ROOT method; variants are toggles below ────────
+        ui.add_enabled_ui(!running, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for m in reg.methods() {
+                    if m.parent().is_some() {
+                        continue; // a variant (e.g. perturbation) — shown as a toggle
+                    }
+                    let Some(algo) = controls::algo_from_id(m.id()) else {
+                        continue;
+                    };
+                    let selected = m.id() == cur_root;
+                    if ui
+                        .selectable_label(selected, crate::i18n::tr(m.label_key()))
+                        .clicked()
+                        && !selected
+                    {
+                        self.algo = algo;
+                        self.coerce_start_point();
+                    }
+                }
+            });
+        });
+        ui.separator();
+
+        // ── Variant toggles for the current root (perturbation under NRPA, …) ────
+        ui.add_enabled_ui(!running, |ui| {
+            for m in reg.methods() {
+                if m.parent() != Some(cur_root) {
+                    continue;
+                }
+                let Some(child) = controls::algo_from_id(m.id()) else {
+                    continue;
+                };
+                let root_algo = controls::algo_from_id(cur_root).unwrap_or(self.algo);
+                let mut on = self.algo == child;
+                if ui
+                    .checkbox(&mut on, crate::i18n::tr(m.label_key()))
+                    .changed()
+                {
+                    self.algo = if on { child } else { root_algo };
+                    self.coerce_start_point();
+                }
+            }
+        });
+
+        // ── Per-engine options (generic from the option specs) + start point ─────
+        ui.add_enabled_ui(!running, |ui| {
+            controls::render_search_options(ui, self.algo, !running);
+            self.setup_start_point(ui);
+            #[cfg(feature = "neural")]
+            if self.algo_uses_prior() {
+                self.overlay_prior_section(ui);
+            }
+        });
+
+        // ── Stop criteria + advanced resources ───────────────────────────────────
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(fl!(l, "stop-criteria"))
+            .id_salt("setup_stop")
+            .show(ui, |ui| self.setup_stop_criteria(ui));
+        egui::CollapsingHeader::new(fl!(l, "adv-header"))
+            .id_salt("setup_advanced")
+            .show(ui, |ui| self.setup_advanced(ui, running));
+
+        // ── Equivalent CLI command ────────────────────────────────────────────────
+        ui.separator();
+        ui.label(egui::RichText::new(fl!(l, "setup-cli-command")).strong());
+        let mut cmd = self.cli_command();
+        ui.add(
+            egui::TextEdit::singleline(&mut cmd)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace)
+                .interactive(false),
+        );
+        if ui.button(fl!(l, "setup-copy-command")).clicked() {
+            ui.ctx().copy_text(cmd);
+        }
+
+        // ── Launch ────────────────────────────────────────────────────────────────
+        ui.add_space(6.0);
+        if running {
+            ui.label(egui::RichText::new(fl!(l, "setup-running-note")).weak());
+        } else {
+            // Perturbation needs a loaded game; continuing a finished game is a no-op.
+            let can_start = match self.algo {
+                SearchAlgo::Perturbation => !self.state.history.is_empty(),
+                _ => !(self.start_point == StartPoint::Continue
+                    && !self.state.history.is_empty()
+                    && self.legal.is_empty()),
+            };
+            let btn = egui::Button::new(
+                egui::RichText::new(fl!(l, "setup-start-search")).strong(),
+            );
+            if ui
+                .add_enabled(can_start, btn.min_size(egui::vec2(ui.available_width(), 30.0)))
+                .clicked()
+            {
+                self.request_search();
+            }
+        }
+    }
+
+    /// Start-point selector (Fresh cross / Seed / Continue), method-aware. Perturbation
+    /// always perturbs the loaded game, so it shows a note instead of a choice.
+    fn setup_start_point(&mut self, ui: &mut egui::Ui) {
+        let l = &*LANGUAGE_LOADER;
+        let options = controls::start_points_for(self.algo);
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(fl!(l, "start-point-label")).strong());
+        if options.is_empty() {
+            ui.label(egui::RichText::new(fl!(l, "perturbation-hint")).weak().small());
+            return;
+        }
+        let warm_available = !self.state.history.is_empty();
+        let loaded_terminal = warm_available && self.legal.is_empty();
+        let mut needs_game = false;
+        for &sp in options {
+            let wants_game = matches!(sp, StartPoint::Seeded | StartPoint::Continue);
+            let terminal_block = sp == StartPoint::Continue && loaded_terminal;
+            if wants_game && !warm_available {
+                needs_game = true;
+            }
+            let enabled = (!wants_game || warm_available) && !terminal_block;
+            ui.add_enabled_ui(enabled, |ui| {
+                if ui
+                    .selectable_label(self.start_point == sp, controls::start_point_label(sp))
+                    .clicked()
+                {
+                    self.start_point = sp;
+                }
+            });
+        }
+        if needs_game {
+            ui.label(egui::RichText::new(fl!(l, "start-needs-game")).weak().small());
+        }
+    }
+
+    /// Stop criteria: time / target score / max nodes (any reached ⇒ stop).
+    fn setup_stop_criteria(&mut self, ui: &mut egui::Ui) {
+        let l = &*LANGUAGE_LOADER;
+        // Time.
+        let mut on = self.stop_time.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut on, fl!(l, "stop-after")).changed() {
+                self.stop_time = on.then(|| Duration::from_secs(60));
+            }
+            if let Some(d) = &mut self.stop_time {
+                let mut secs = d.as_secs();
+                if ui.add(egui::DragValue::new(&mut secs).range(1..=86_400).suffix(" s")).changed() {
+                    *d = Duration::from_secs(secs.max(1));
+                }
+            }
+        });
+        // Target score.
+        let mut on = self.stop_score.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut on, fl!(l, "stop-at-score")).changed() {
+                self.stop_score = on.then_some(150);
+            }
+            if let Some(s) = &mut self.stop_score {
+                ui.add(egui::DragValue::new(s).range(1..=400));
+            }
+        });
+        // Max nodes.
+        let mut on = self.stop_nodes.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut on, fl!(l, "stop-nodes")).changed() {
+                self.stop_nodes = on.then_some(100_000_000);
+            }
+            if let Some(n) = &mut self.stop_nodes {
+                ui.add(egui::DragValue::new(n).speed(1e6));
+            }
+        });
+    }
+
+    /// Advanced resources: worker threads, RAM budget, grid-overflow handling.
+    fn setup_advanced(&mut self, ui: &mut egui::Ui, running: bool) {
+        let l = &*LANGUAGE_LOADER;
+        ui.add_enabled_ui(!running, |ui| {
+            // Threads.
+            let mut on = self.cfg_threads.is_some();
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut on, fl!(l, "adv-threads")).changed() {
+                    self.cfg_threads = on.then(num_cpus_hint);
+                }
+                if let Some(t) = &mut self.cfg_threads {
+                    ui.add(egui::DragValue::new(t).range(1..=1024));
+                }
+            });
+            // Max memory (NRPA family only).
+            if matches!(self.algo, SearchAlgo::Nrpa | SearchAlgo::Perturbation) {
+                let mut on = self.cfg_max_memory.is_some();
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut on, fl!(l, "adv-max-memory")).changed() {
+                        self.cfg_max_memory = on.then_some(4u64 << 30);
+                    }
+                    if let Some(m) = &mut self.cfg_max_memory {
+                        let mut mb = *m >> 20;
+                        if ui
+                            .add(egui::DragValue::new(&mut mb).range(64..=1_048_576).suffix(" MB"))
+                            .changed()
+                        {
+                            *m = mb.max(64) << 20;
+                        }
+                    }
+                });
+            }
+            ui.checkbox(&mut self.cfg_ignore_overflow, fl!(l, "adv-ignore-overflow"));
+        });
+    }
+
+    /// The CLI command equivalent to the current overlay settings — the CLI↔GUI bridge.
+    /// Emits only off-default flags, rendered generically from the option registry.
+    fn cli_command(&self) -> String {
+        use crate::search::plugin::{registry, OptionKind, OptionValue};
+        let reg = registry();
+        let mut args: Vec<String> = vec!["morpion-solitaire".to_owned()];
+        if self.selected_variant != Variant::T5 {
+            args.push(format!("--variant {}", self.selected_variant.name()));
+        }
+        args.push("search".to_owned());
+        let id = controls::algo_id(self.algo);
+        if self.algo != SearchAlgo::Nrpa {
+            args.push(format!("--algo {id}"));
+        }
+        // Engine options in scope, when off their default — straight from the specs.
+        for spec in reg.options() {
+            if !spec.scope.applies_to(id) {
+                continue;
+            }
+            match (spec.kind, reg.value(spec.key)) {
+                (OptionKind::Toggle { default }, Some(OptionValue::Toggle(b))) if b != default => {
+                    args.push(format!("--{}", spec.cli_flag()));
+                }
+                (OptionKind::Float { default, .. }, Some(OptionValue::Float(f)))
+                    if (f - default).abs() > f64::EPSILON =>
+                {
+                    args.push(format!("--{} {}", spec.key, f));
+                }
+                (OptionKind::Int { default, .. }, Some(OptionValue::Int(i))) if i != default => {
+                    args.push(format!("--{} {}", spec.key, i));
+                }
+                _ => {}
+            }
+        }
+        #[cfg(feature = "neural")]
+        if self.algo_uses_prior() {
+            use controls::PriorSource as P;
+            match self.prior_source {
+                P::Bundled => args.push("--prior bundled".to_owned()),
+                P::Corpus => args.push("--prior corpus".to_owned()),
+                P::TabulaRasa => args.push("--prior PRIOR.safetensors".to_owned()),
+                P::File => args.push("--prior PRIOR.safetensors".to_owned()),
+                P::None => {}
+            }
+        }
+        if self.start_point == StartPoint::Continue {
+            args.push("--from GAME.msr".to_owned());
+        }
+        if let Some(d) = self.stop_time {
+            args.push(format!("--time {}s", d.as_secs()));
+        }
+        if let Some(s) = self.stop_score {
+            args.push(format!("--target-score {s}"));
+        }
+        if let Some(n) = self.stop_nodes {
+            args.push(format!("--max-nodes {n}"));
+        }
+        if let Some(t) = self.cfg_threads {
+            args.push(format!("--threads {t}"));
+        }
+        if let Some(m) = self.cfg_max_memory {
+            args.push(format!("--max-memory {}M", m >> 20));
+        }
+        if self.cfg_ignore_overflow {
+            args.push("--ignore-overflow".to_owned());
+        }
+        args.join(" ")
+    }
+
+    /// The overlay's Start: launch the search (which arms/defers the neural prior as
+    /// needed) and close the overlay.
+    fn request_search(&mut self) {
+        self.start_search();
+        self.search_setup_open = false;
+    }
+
+    /// The neural-prior sub-section of the overlay (feature `neural`): a source selector
+    /// (None/Bundled/Corpus/Tabula-rasa/File), a Load button for File, a Cancel button
+    /// while training, and a status line.
+    #[cfg(feature = "neural")]
+    fn overlay_prior_section(&mut self, ui: &mut egui::Ui) {
+        use crate::i18n::tr;
+        let l = &*LANGUAGE_LOADER;
+        let busy = self.prior_busy();
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(fl!(l, "prior-section")).strong());
+        ui.add_enabled_ui(!busy, |ui| {
+            egui::ComboBox::from_id_salt("overlay_prior_source")
+                .selected_text(tr(self.prior_source.label_key()))
+                .show_ui(ui, |ui| {
+                    for &s in controls::PriorSource::all() {
+                        if ui
+                            .selectable_label(self.prior_source == s, tr(s.label_key()))
+                            .on_hover_text(tr(s.hint_key()))
+                            .clicked()
+                        {
+                            self.set_prior_source(s);
+                        }
+                    }
+                });
+            if self.prior_source == controls::PriorSource::File
+                && ui.button(fl!(l, "btn-load-prior")).clicked()
+            {
+                self.load_prior_from_file();
+            }
+        });
+        if busy && ui.button(fl!(l, "btn-cancel-training")).clicked() {
+            self.cancel_prior_training();
+        }
+        let status = self.prior_status_text();
+        if !status.is_empty() {
+            ui.label(egui::RichText::new(status).weak().small());
+        }
+    }
+}
+
+/// A reasonable default worker-thread count for the advanced panel (logical cores).
+fn num_cpus_hint() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
 impl eframe::App for MorpionApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let mut set = |k: &str, v: String| storage.set_string(k, v);
@@ -1741,6 +2144,13 @@ impl eframe::App for MorpionApp {
         // Tick the search timer while running; it freezes once the search stops.
         if self.search_running() {
             self.search_elapsed = self.search_start.elapsed();
+            // Enforce the overlay's stop criteria (any reached ⇒ stop), like the CLI.
+            let hit = self.stop_time.is_some_and(|d| self.search_elapsed >= d)
+                || self.stop_score.is_some_and(|t| best_search_score >= t)
+                || self.stop_nodes.is_some_and(|m| nodes_explored >= m);
+            if hit {
+                self.stop_search();
+            }
         }
 
         // The systematic search can drain the whole tree on its own (only feasible
@@ -1817,7 +2227,9 @@ impl eframe::App for MorpionApp {
         // check lives in `Board::insert`; here we just poll the flag, then save the
         // best, stop, and alert — never crash. `swap` consumes the flag so the
         // routine runs once even though winding-down threads may re-set it.
-        if crate::game::board::GRID_OVERFLOW.swap(false, Ordering::Relaxed) && self.search_running()
+        if crate::game::board::GRID_OVERFLOW.swap(false, Ordering::Relaxed)
+            && self.search_running()
+            && !self.cfg_ignore_overflow
         {
             self.handle_grid_overflow(best_search_score);
         }
@@ -1957,46 +2369,18 @@ impl eframe::App for MorpionApp {
                             .unwrap_or_default(),
                         checkpoint_supported,
                         resume,
-                        #[cfg(feature = "neural")]
-                        prior_source: self.prior_source,
-                        #[cfg(feature = "neural")]
-                        prior_status: self.prior_status_text(),
-                        #[cfg(feature = "neural")]
-                        prior_busy: self.prior_busy(),
                     },
                 );
                 if let Some(v) = out.new_game {
                     self.request(PendingAction::NewGame(v));
                 }
-                if let Some(a) = out.set_algo {
-                    self.algo = a;
-                    // Keep the starting point valid for the new algorithm.
-                    if !controls::start_points_for(a).contains(&self.start_point) {
-                        self.start_point = StartPoint::Empty;
-                    }
-                }
-                if let Some(sp) = out.set_start_point {
-                    self.start_point = sp;
-                }
-                #[cfg(feature = "neural")]
-                if let Some(src) = out.set_prior_source {
-                    self.set_prior_source(src);
-                }
-                #[cfg(feature = "neural")]
-                if out.load_prior_file {
-                    self.load_prior_from_file();
-                }
-                #[cfg(feature = "neural")]
-                if out.cancel_training {
-                    self.cancel_prior_training();
+                if out.open_setup {
+                    self.search_setup_open = true;
                 }
                 if let Some(j) = out.load_record {
                     if let Some((_, _, msr)) = record_idx.get(j).and_then(|&i| RECORDS.get(i)) {
                         self.request(PendingAction::LoadMsr(msr));
                     }
-                }
-                if out.start_search {
-                    self.start_search();
                 }
                 if out.stop_search {
                     self.stop_search();
@@ -2227,6 +2611,7 @@ impl eframe::App for MorpionApp {
             self.board_toolbars(&ctx, board_rect);
             self.search_overlay(&ctx, board_rect);
         }
+        self.search_setup_window(&ctx);
         self.shortcuts_window(&ctx);
         self.rules_window(&ctx);
 

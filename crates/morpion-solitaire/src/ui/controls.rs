@@ -78,7 +78,7 @@ impl PriorSource {
         ]
     }
     /// i18n key for the radio label.
-    fn label_key(self) -> &'static str {
+    pub(crate) fn label_key(self) -> &'static str {
         match self {
             PriorSource::None => "prior-none",
             PriorSource::Bundled => "prior-bundled",
@@ -88,7 +88,7 @@ impl PriorSource {
         }
     }
     /// i18n key for the radio tooltip.
-    fn hint_key(self) -> &'static str {
+    pub(crate) fn hint_key(self) -> &'static str {
         match self {
             PriorSource::None => "prior-none-hint",
             PriorSource::Bundled => "prior-bundled-hint",
@@ -185,25 +185,15 @@ pub struct ControlsInput {
     pub checkpoint_supported: bool,
     /// Present when a saved checkpoint exists on disk (enables & annotates Resume).
     pub resume: Option<ResumeInfo>,
-    /// Selected neural-prior source (feature `neural`).
-    #[cfg(feature = "neural")]
-    pub prior_source: PriorSource,
-    /// Already-localized prior status line (training/ready/error); empty ⇒ none shown.
-    #[cfg(feature = "neural")]
-    pub prior_status: String,
-    /// Whether a prior build/training is in progress (shows Cancel, locks the radio).
-    #[cfg(feature = "neural")]
-    pub prior_busy: bool,
 }
 
 #[derive(Default)]
 pub struct ControlsOutput {
     pub new_game: Option<Variant>,
-    pub set_algo: Option<SearchAlgo>,
-    pub set_start_point: Option<StartPoint>,
     /// Index into `record_names` of a record the user chose to load.
     pub load_record: Option<usize>,
-    pub start_search: bool,
+    /// Open the floating search-setup overlay (engine/options/prior/start).
+    pub open_setup: bool,
     pub stop_search: bool,
     /// Toggle the cooperative pause on the running search.
     pub toggle_pause: bool,
@@ -222,15 +212,6 @@ pub struct ControlsOutput {
     pub toggle_theme: bool,
     pub show_shortcuts: bool,
     pub show_rules: bool,
-    /// Switch the neural-prior source (feature `neural`).
-    #[cfg(feature = "neural")]
-    pub set_prior_source: Option<PriorSource>,
-    /// Open a file dialog to load a prior (feature `neural`, `File` source).
-    #[cfg(feature = "neural")]
-    pub load_prior_file: bool,
-    /// Cancel an in-progress prior training (feature `neural`).
-    #[cfg(feature = "neural")]
-    pub cancel_training: bool,
 }
 
 pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
@@ -416,92 +397,10 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
         ui.add_space(6.0);
         ui.heading(fl!(l, "search-section"));
         ui.add_space(4.0);
-        ui.label(RichText::new(fl!(l, "algo-label")).strong());
-        let algo_label = |a: SearchAlgo| match a {
-            SearchAlgo::Nrpa => fl!(l, "algo-nrpa"),
-            SearchAlgo::Beam => fl!(l, "algo-beam"),
-            SearchAlgo::Systematic => fl!(l, "algo-systematic"),
-            SearchAlgo::Perturbation => fl!(l, "algo-perturbation"),
-            #[cfg(feature = "neural")]
-            SearchAlgo::Puct => crate::i18n::tr("algo-puct"),
-        };
-        ui.add_enabled_ui(!input.search_running, |ui| {
-            // Ordered simplest/exact → most sophisticated heuristic, matching the
-            // docs' Search-algorithms page.
-            let mut algos = vec![SearchAlgo::Systematic, SearchAlgo::Beam, SearchAlgo::Nrpa];
-            // Perturbation is native-only (it uses OS threads).
-            if input.checkpoint_supported {
-                algos.push(SearchAlgo::Perturbation);
-            }
-            // PUCT (feature `neural`, native): policy+value tree search.
-            #[cfg(feature = "neural")]
-            if input.checkpoint_supported {
-                algos.push(SearchAlgo::Puct);
-            }
-            egui::ComboBox::from_id_salt("algo")
-                .selected_text(algo_label(input.algo))
-                .show_ui(ui, |ui| {
-                    for a in algos {
-                        if ui
-                            .selectable_label(input.algo == a, algo_label(a))
-                            .clicked()
-                        {
-                            out.set_algo = Some(a);
-                        }
-                    }
-                });
-        });
-        // Engine-tuning options, rendered generically from the plugin registry: a new
-        // plugin option appears here with no edit to this file, and only the options in
-        // scope for the chosen algorithm show (docs/plugin-framework.md).
-        render_search_options(ui, input.algo, !input.search_running);
-
-        // Neural move prior (feature `neural`): source selector + status. The strength
-        // slider (`neural-scale`) already shows via the generic options above.
-        #[cfg(feature = "neural")]
-        render_prior_panel(ui, input, &mut out);
-
-        // Starting point — the valid set depends on the algorithm. Perturbation
-        // always perturbs the loaded game, so it shows a note instead of a choice.
-        ui.add_space(6.0);
-        ui.label(RichText::new(fl!(l, "start-point-label")).strong());
-        let options = start_points_for(input.algo);
-        if options.is_empty() {
-            ui.label(RichText::new(fl!(l, "perturbation-hint")).weak().small());
-        } else {
-            let sp_label = |sp: StartPoint| match sp {
-                StartPoint::Empty => fl!(l, "start-empty"),
-                StartPoint::Seeded => fl!(l, "start-seeded"),
-                StartPoint::Continue => fl!(l, "start-continue"),
-            };
-            let mut needs_game_shown = false;
-            ui.add_enabled_ui(!input.search_running, |ui| {
-                for &sp in options {
-                    let needs_game = matches!(sp, StartPoint::Seeded | StartPoint::Continue);
-                    // Continuing an already-finished game explores nothing.
-                    let terminal_block = sp == StartPoint::Continue && input.loaded_terminal;
-                    if needs_game && !input.warm_available {
-                        needs_game_shown = true;
-                    }
-                    let enabled = (!needs_game || input.warm_available) && !terminal_block;
-                    ui.add_enabled_ui(enabled, |ui| {
-                        if ui
-                            .selectable_label(input.start_point == sp, sp_label(sp))
-                            .clicked()
-                        {
-                            out.set_start_point = Some(sp);
-                        }
-                    });
-                }
-            });
-            if needs_game_shown {
-                ui.label(RichText::new(fl!(l, "start-needs-game")).weak().small());
-            }
-            if input.start_point == StartPoint::Continue && input.loaded_terminal {
-                ui.label(RichText::new(fl!(l, "start-terminal")).weak().small());
-            }
-        }
-        ui.add_space(8.0);
+        ui.add_space(2.0);
+        // Search configuration (engine, options, prior, start point) lives in a
+        // floating setup overlay; here the side panel only opens it and shows the live
+        // dashboard while a search runs.
         if input.search_running {
             ui.horizontal(|ui| {
                 if icons::icon_button(ui, Icon::Stop, false, true)
@@ -523,19 +422,15 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
                     out.toggle_pause = true;
                 }
             });
-        } else {
-            // Can't start with nothing to explore: Perturbation needs a loaded
-            // game; Continue from an already-finished position is a no-op.
-            let can_start = match input.algo {
-                SearchAlgo::Perturbation => input.warm_available,
-                _ => !(input.start_point == StartPoint::Continue && input.loaded_terminal),
-            };
-            if icons::icon_button(ui, Icon::Play, false, can_start)
-                .on_hover_text(fl!(l, "btn-start"))
-                .clicked()
-            {
-                out.start_search = true;
-            }
+        } else if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(fl!(l, "search-configure")),
+            )
+            .on_hover_text(fl!(l, "search-configure-hint"))
+            .clicked()
+        {
+            out.open_setup = true;
         }
 
         // Checkpoint / resume (systematic + NRPA + perturbation, native only).
@@ -623,49 +518,8 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
     out
 }
 
-/// The neural-prior panel (feature `neural`): a source selector (None/Bundled/Corpus/
-/// Tabula-rasa/File), a Load button for the File source, a Cancel button while
-/// training, and a status line. Shown only for the NRPA family (the only consumer of
-/// the bias). The strength slider is rendered by [`render_search_options`].
-#[cfg(feature = "neural")]
-fn render_prior_panel(ui: &mut Ui, input: &ControlsInput, out: &mut ControlsOutput) {
-    use crate::i18n::tr;
-    if !matches!(input.algo, SearchAlgo::Nrpa | SearchAlgo::Perturbation) {
-        return;
-    }
-    let l = &*LANGUAGE_LOADER;
-    ui.add_space(6.0);
-    ui.label(RichText::new(fl!(l, "prior-section")).strong());
-    ui.add_enabled_ui(!input.search_running && !input.prior_busy, |ui| {
-        egui::ComboBox::from_id_salt("prior_source")
-            .selected_text(tr(input.prior_source.label_key()))
-            .show_ui(ui, |ui| {
-                for &s in PriorSource::all() {
-                    if ui
-                        .selectable_label(input.prior_source == s, tr(s.label_key()))
-                        .on_hover_text(tr(s.hint_key()))
-                        .clicked()
-                    {
-                        out.set_prior_source = Some(s);
-                    }
-                }
-            });
-        if input.prior_source == PriorSource::File
-            && ui.button(fl!(l, "btn-load-prior")).clicked()
-        {
-            out.load_prior_file = true;
-        }
-    });
-    if input.prior_busy && ui.button(fl!(l, "btn-cancel-training")).clicked() {
-        out.cancel_training = true;
-    }
-    if !input.prior_status.is_empty() {
-        ui.label(RichText::new(&input.prior_status).weak().small());
-    }
-}
-
 /// The plugin-registry method id for a GUI algorithm (for option-scope filtering).
-fn algo_id(a: SearchAlgo) -> &'static str {
+pub(crate) fn algo_id(a: SearchAlgo) -> &'static str {
     match a {
         SearchAlgo::Nrpa => "nrpa",
         SearchAlgo::Beam => "beam",
@@ -676,12 +530,49 @@ fn algo_id(a: SearchAlgo) -> &'static str {
     }
 }
 
+/// The GUI algorithm for a registry method id, if the GUI offers it (the inverse of
+/// [`algo_id`]). Lets the engine-tab list be driven by the registered methods.
+pub(crate) fn algo_from_id(id: &str) -> Option<SearchAlgo> {
+    Some(match id {
+        "nrpa" => SearchAlgo::Nrpa,
+        "beam" => SearchAlgo::Beam,
+        "systematic" => SearchAlgo::Systematic,
+        "perturbation" => SearchAlgo::Perturbation,
+        #[cfg(feature = "neural")]
+        "puct" => SearchAlgo::Puct,
+        _ => return None,
+    })
+}
+
+/// Localized engine label (reuses the method's `algo-*` i18n key).
+pub(crate) fn algo_label(a: SearchAlgo) -> String {
+    let l = &*LANGUAGE_LOADER;
+    match a {
+        SearchAlgo::Nrpa => fl!(l, "algo-nrpa"),
+        SearchAlgo::Beam => fl!(l, "algo-beam"),
+        SearchAlgo::Systematic => fl!(l, "algo-systematic"),
+        SearchAlgo::Perturbation => fl!(l, "algo-perturbation"),
+        #[cfg(feature = "neural")]
+        SearchAlgo::Puct => crate::i18n::tr("algo-puct"),
+    }
+}
+
+/// Localized start-point label.
+pub(crate) fn start_point_label(sp: StartPoint) -> String {
+    let l = &*LANGUAGE_LOADER;
+    match sp {
+        StartPoint::Empty => fl!(l, "start-empty"),
+        StartPoint::Seeded => fl!(l, "start-seeded"),
+        StartPoint::Continue => fl!(l, "start-continue"),
+    }
+}
+
 /// Render the engine-tuning options in scope for `algo`, driven entirely by the plugin
 /// registry's [`OptionSpec`](crate::search::plugin::OptionSpec)s. Each widget reads and
 /// writes the registry's values map directly (the single source of truth the engine
 /// reads at search start), so adding a plugin option needs no change here. Labels and
 /// tooltips resolve at runtime via [`crate::i18n::tr`].
-fn render_search_options(ui: &mut Ui, algo: SearchAlgo, enabled: bool) {
+pub(crate) fn render_search_options(ui: &mut Ui, algo: SearchAlgo, enabled: bool) {
     use crate::i18n::tr;
     use crate::search::plugin::{registry, OptionKind, OptionValue};
     let reg = registry();

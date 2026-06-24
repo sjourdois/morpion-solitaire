@@ -164,3 +164,19 @@ opt-macro-k = Macro length (k)
 opt-macro-k-hint = Moves per motif (default 2). Applied at first use.
 opt-macro-topn = Macro library size
 opt-macro-topn-hint = Keep the top-N most frequent motifs (0 = all; default 32).
+
+# Search-setup overlay
+search-configure = ⚙ Configure search…
+search-configure-hint = Engine, options, prior, stop criteria
+stop-criteria = Stop criteria
+stop-after = Stop after
+stop-at-score = Stop at score
+stop-nodes = Stop after nodes
+adv-header = Advanced
+adv-threads = Threads
+adv-max-memory = Max memory
+adv-ignore-overflow = Ignore grid overflow
+setup-cli-command = Equivalent CLI command
+setup-copy-command = Copy command
+setup-running-note = A search is running — stop criteria apply now; other changes take effect next run.
+setup-start-search = ▶  Start search

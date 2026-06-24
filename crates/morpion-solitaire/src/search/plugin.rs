@@ -38,6 +38,13 @@ pub struct StartCtx {
 pub trait Method: Sync {
     /// Stable id: the CLI `--algo` value and the checkpoint engine name.
     fn id(&self) -> &'static str;
+    /// The id of the method this is a **variant** of, if any — e.g. perturbation is a
+    /// large-neighbourhood variant of `nrpa`, not a standalone engine. The GUI renders
+    /// root methods (`None`) as engine tabs and variants as a toggle within the parent's
+    /// tab; `None` (the default) is a top-level engine.
+    fn parent(&self) -> Option<&'static str> {
+        None
+    }
     /// i18n key for the GUI label.
     fn label_key(&self) -> &'static str;
     /// Launch the search on its own thread, driving `search`.
@@ -438,6 +445,9 @@ struct Perturbation;
 impl Method for Perturbation {
     fn id(&self) -> &'static str {
         "perturbation"
+    }
+    fn parent(&self) -> Option<&'static str> {
+        Some("nrpa") // a large-neighbourhood variant of NRPA, not a standalone engine
     }
     fn label_key(&self) -> &'static str {
         "algo-perturbation"
