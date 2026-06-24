@@ -30,6 +30,14 @@ pub fn apply_transform(t: usize, (x, y): Pos, k: i16) -> Pos {
     }
 }
 
+/// The **linear part** of [`apply_transform`] (translation dropped): the D4 action on
+/// a *displacement* (a vector/offset, anchor-fixed), i.e. `apply_transform(t, p, 0)`.
+/// Used to transform motif moves relative to their anchor (`search::macros`).
+#[inline]
+pub fn lin_transform(t: usize, p: Pos) -> Pos {
+    apply_transform(t, p, 0)
+}
+
 /// Deterministic per-position Zobrist value (splitmix64 finalizer on packed coords).
 pub fn zobrist_value((x, y): Pos) -> u64 {
     let mut h = (x as i64 as u64).wrapping_mul(0x9e3779b97f4a7c15)

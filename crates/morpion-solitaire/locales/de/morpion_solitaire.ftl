@@ -158,3 +158,9 @@ opt-feat-adapt = Feature-Raum-NRPA
 opt-feat-adapt-hint = Passt online einen Kopf über die eingefrorenen Netz-Features an (φ-B) statt eines festen Prior-Bias. Braucht einen Prior. Experimentell.
 opt-feat-alpha = Feature-Raum-Schritt (α_θ)
 opt-feat-alpha-hint = Kopf-Schrittweite für Feature-Raum-NRPA. Standard 0.1. Nur wenn aktiv.
+opt-macros = Makro-Aktionen
+opt-macros-hint = NRPA wählt auch Mehrzug-Motive aus Rekorden (nur 5T). Experimentell.
+opt-macro-k = Makro-Länge (k)
+opt-macro-k-hint = Züge pro Motiv (Standard 2). Bei erster Nutzung angewandt.
+opt-macro-topn = Makro-Bibliotheksgröße
+opt-macro-topn-hint = Die N häufigsten Motive behalten (0 = alle; Standard 32).

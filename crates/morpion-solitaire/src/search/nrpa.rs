@@ -421,7 +421,7 @@ const PERTURB_MAX_SECS: f64 = 30.0;
 /// Is `m` playable in `st` right now: its placed point empty, the line's four other
 /// cells occupied, and the line not conflicting with a drawn one.
 #[cfg(not(target_arch = "wasm32"))]
-fn move_playable(st: &GameState, m: &Move, line_len: u8) -> bool {
+pub(crate) fn move_playable(st: &GameState, m: &Move, line_len: u8) -> bool {
     use crate::game::rules::TouchMode;
     if st.board.contains(m.pos) {
         return false;
@@ -855,6 +855,10 @@ fn island(
     // there is no per-playout clone of the ~14 KB game state.
     let mut scratch = initial_state.clone();
     let selfwarm = nrpa_selfwarm();
+    // Macro-actions (5T only): when on, this island runs the action-space NRPA path.
+    #[cfg(not(target_arch = "wasm32"))]
+    let use_macros = crate::search::plugin::registry().value_bool("macros", false)
+        && initial_state.variant == crate::game::rules::Variant::T5;
     while search.running.load(Ordering::Relaxed) {
         // Fresh head θ each restart (feature-space NRPA; no-op unless --feat-adapt).
         #[cfg(feature = "neural")]
@@ -873,6 +877,13 @@ fn island(
         } else {
             seed.cloned().unwrap_or_default()
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        if use_macros {
+            macro_nrpa(level, n, &mut policy, &mut scratch, base_sym, search, macro_lib());
+        } else {
+            nrpa(level, n, &mut policy, &mut scratch, base_sym, search);
+        }
+        #[cfg(target_arch = "wasm32")]
         nrpa(level, n, &mut policy, &mut scratch, base_sym, search);
     }
 }
@@ -1215,6 +1226,262 @@ fn build_base_sym(state: &GameState) -> SymmetryHashes {
         s.toggle(cell);
     }
     s
+}
+
+// ===== Macro-actions (docs/macro-actions.md) =====
+// When the `macros` option is on (5T only), the playout/adapt sample over {legal
+// single moves} ∪ {legal macros} — multi-move motifs mined from records — so NRPA
+// composes over a coarser horizon. A self-contained path (macro_nrpa/macro_playout/
+// macro_adapt) selected in `island`, leaving the default move-only path untouched.
+// Native-only (motif legality uses `move_playable`).
+
+/// The frozen Macro-A library (built once). 5T-specific for now (the campaign target,
+/// like the record corpus); macros only engage on a 5T search. The motif length and
+/// library size are read from the `macro-k`/`macro-topn` options at first build.
+#[cfg(not(target_arch = "wasm32"))]
+fn macro_lib() -> &'static crate::search::macros::MotifLib {
+    use crate::search::macros::{motif_library, MotifLib};
+    static L: std::sync::OnceLock<MotifLib> = std::sync::OnceLock::new();
+    L.get_or_init(|| {
+        let reg = crate::search::plugin::registry();
+        let v = crate::game::rules::Variant::T5;
+        let k = reg.value_int("macro-k", 2).max(1) as usize;
+        let topn = reg.value_int("macro-topn", 32).max(0) as usize;
+        MotifLib::build(motif_library(v, k, topn), v)
+    })
+}
+
+/// One action taken in a macro-enabled playout: the policy code adapted for it and
+/// the moves it consumed (1 for a single move, k for a macro).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct ActStep {
+    code: u64,
+    moves: Vec<Move>,
+}
+
+/// Macro-enabled NRPA recursion (mirrors [`nrpa`] but over [`ActStep`] sequences, the
+/// action = single move *or* macro). Length is the total move count (the game score).
+#[cfg(not(target_arch = "wasm32"))]
+fn macro_nrpa(
+    level: usize,
+    n: usize,
+    policy: &mut Policy,
+    scratch: &mut GameState,
+    base_sym: &SymmetryHashes,
+    search: &Arc<SearchState>,
+    lib: &crate::search::macros::MotifLib,
+) -> Vec<ActStep> {
+    if !search.running.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    let cap = search.max_policy_entries.load(Ordering::Relaxed);
+    if cap > 0 && policy.len() > cap {
+        return Vec::new();
+    }
+    if level == 0 {
+        return macro_playout(policy, scratch, base_sym, search, lib);
+    }
+    let mut best: Vec<ActStep> = Vec::new();
+    let mut best_moves = 0usize;
+    for _ in 0..n {
+        search.wait_if_paused();
+        if !search.running.load(Ordering::Relaxed) {
+            break;
+        }
+        let seq = macro_nrpa(level - 1, n, policy, scratch, base_sym, search, lib);
+        let seq_moves: usize = seq.iter().map(|a| a.moves.len()).sum();
+        if seq_moves > best_moves {
+            best_moves = seq_moves;
+            best = seq;
+        }
+        macro_adapt(policy, scratch, base_sym, lib, &best);
+    }
+    best
+}
+
+/// Macro-enabled level-0 playout: softmax over {legal single moves} ∪ {legal macros}
+/// by policy code (cold table — macros are the lever, no β/neural here), apply the
+/// chosen action's moves, record the action sequence.
+#[cfg(not(target_arch = "wasm32"))]
+fn macro_playout(
+    policy: &Policy,
+    scratch: &mut GameState,
+    base_sym: &SymmetryHashes,
+    search: &Arc<SearchState>,
+    lib: &crate::search::macros::MotifLib,
+) -> Vec<ActStep> {
+    use crate::search::macros::MacroInstance;
+    let mut sym = base_sym.clone();
+    let start = scratch.history.len();
+    let mut rng = rand::rng();
+    let inv_temp = TEMP_INV.with(|c| c.get());
+    let local = nrpa_local();
+    let sym_on = crate::search::plugin::registry().sym_on();
+    let mut moves: Vec<Move> = Vec::new();
+    let mut moves_next: Vec<Move> = Vec::new();
+    let mut insts: Vec<MacroInstance> = Vec::new();
+    let mut codes: Vec<u64> = Vec::new();
+    let mut weights: Vec<f64> = Vec::new();
+    let mut taken: Vec<ActStep> = Vec::new();
+
+    legal_moves_into(scratch, &mut moves);
+    loop {
+        if moves.is_empty() {
+            break;
+        }
+        let coder = sym.move_coder();
+        // Action set: single moves first, then legal macros.
+        codes.clear();
+        codes.extend(moves.iter().map(|mv| move_code(&coder, scratch, mv, local)));
+        let n_single = moves.len();
+        insts.clear();
+        lib.legal_macros(scratch, &moves, &mut insts);
+        codes.extend(insts.iter().map(|mi| mi.code));
+
+        weights.clear();
+        weights.extend(codes.iter().map(|c| match policy.get(c) {
+            Some(&w) => (w * inv_temp).exp(),
+            None => 1.0,
+        }));
+        let total: f64 = weights.iter().sum();
+        let mut r = rng.random::<f64>() * total;
+        let mut chosen = codes.len() - 1;
+        for (i, &w) in weights.iter().enumerate() {
+            r -= w;
+            if r <= 0.0 {
+                chosen = i;
+                break;
+            }
+        }
+
+        // Resolve the chosen action into its moves.
+        let (code, act_moves) = if chosen < n_single {
+            (codes[chosen], vec![moves[chosen]])
+        } else {
+            let mi = &insts[chosen - n_single];
+            (mi.code, mi.moves.clone())
+        };
+        // Apply the action incrementally; on a mid-macro grid overflow, record only the
+        // moves actually applied so `adapt` replays an identical prefix. A node per move.
+        let mut applied: Vec<Move> = Vec::with_capacity(act_moves.len());
+        let mut overflow = false;
+        for &m in &act_moves {
+            if !scratch.apply(m) {
+                overflow = true;
+                break;
+            }
+            applied.push(m);
+            if sym_on {
+                sym.toggle(m.pos);
+            } else {
+                sym.toggle_identity(m.pos);
+            }
+            child_legal_moves_into(&mut moves_next, &moves, scratch, m);
+            std::mem::swap(&mut moves, &mut moves_next);
+        }
+        search
+            .nodes_explored
+            .fetch_add(applied.len() as u64, Ordering::Relaxed);
+        if !applied.is_empty() {
+            taken.push(ActStep {
+                code,
+                moves: applied,
+            });
+        }
+        if overflow {
+            break;
+        }
+    }
+
+    let full = scratch.history.clone();
+    let score = full.len() as u32;
+    if score > search.best_score.load(Ordering::Relaxed) {
+        search.record_best(score, full);
+    }
+    while scratch.history.len() > start {
+        scratch.undo();
+    }
+    taken
+}
+
+/// Adapt the policy toward `best` (an action sequence): the NRPA step over actions —
+/// raise the chosen action's code by α, lower every legal action's code by α·P. A
+/// macro step then applies its moves to reach the next state.
+#[cfg(not(target_arch = "wasm32"))]
+fn macro_adapt(
+    policy: &mut Policy,
+    scratch: &mut GameState,
+    base_sym: &SymmetryHashes,
+    lib: &crate::search::macros::MotifLib,
+    best: &[ActStep],
+) {
+    use crate::search::macros::MacroInstance;
+    let mut sym = base_sym.clone();
+    let start = scratch.history.len();
+    let inv_temp = TEMP_INV.with(|c| c.get());
+    let local = nrpa_local();
+    let reg = crate::search::plugin::registry();
+    let sym_on = reg.sym_on();
+    let clamp = match CLAMP_OVERRIDE.with(|c| c.get()) {
+        Some(c) => Some(c),
+        None => reg.clamp(),
+    };
+    let alpha = reg.alpha();
+    let mut moves: Vec<Move> = Vec::new();
+    let mut moves_next: Vec<Move> = Vec::new();
+    let mut insts: Vec<MacroInstance> = Vec::new();
+    let mut codes: Vec<u64> = Vec::new();
+    let mut exps: Vec<f64> = Vec::new();
+
+    legal_moves_into(scratch, &mut moves);
+    for step in best {
+        if moves.is_empty() {
+            break;
+        }
+        let coder = sym.move_coder();
+        codes.clear();
+        codes.extend(moves.iter().map(|mv| move_code(&coder, scratch, mv, local)));
+        insts.clear();
+        lib.legal_macros(scratch, &moves, &mut insts);
+        codes.extend(insts.iter().map(|mi| mi.code));
+        exps.clear();
+        exps.extend(codes.iter().map(|c| match policy.get(c) {
+            Some(&w) => (w * inv_temp).exp(),
+            None => 1.0,
+        }));
+        let z: f64 = exps.iter().sum();
+
+        *policy.entry(step.code).or_insert(0.0) += alpha;
+        for (&c, &e) in codes.iter().zip(&exps) {
+            let p = policy.entry(c).or_insert(0.0);
+            *p -= alpha * (e / z);
+            if let Some(cl) = clamp {
+                *p = p.clamp(-cl, cl);
+            }
+        }
+
+        let mut overflow = false;
+        for &m in &step.moves {
+            if !scratch.apply(m) {
+                overflow = true;
+                break;
+            }
+            if sym_on {
+                sym.toggle(m.pos);
+            } else {
+                sym.toggle_identity(m.pos);
+            }
+            child_legal_moves_into(&mut moves_next, &moves, scratch, m);
+            std::mem::swap(&mut moves, &mut moves_next);
+        }
+        if overflow {
+            break;
+        }
+    }
+    while scratch.history.len() > start {
+        scratch.undo();
+    }
 }
 
 #[cfg(test)]

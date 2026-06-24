@@ -158,3 +158,9 @@ opt-feat-adapt = NRPA espaço-features
 opt-feat-adapt-hint = Adapta uma cabeça sobre as features congeladas da rede online (φ-B) em vez de um viés fixo. Precisa de um prior. Experimental.
 opt-feat-alpha = Passo espaço-features (α_θ)
 opt-feat-alpha-hint = Tamanho do passo da cabeça para NRPA espaço-features. Predefinição 0.1. Só quando ativo.
+opt-macros = Macro-ações
+opt-macros-hint = O NRPA também escolhe motivos multi-jogada extraídos de recordes (só 5T). Experimental.
+opt-macro-k = Comprimento macro (k)
+opt-macro-k-hint = Jogadas por motivo (predefinição 2). Aplicado no primeiro uso.
+opt-macro-topn = Tamanho da biblioteca macro
+opt-macro-topn-hint = Manter os N motivos mais frequentes (0 = todos; predefinição 32).
