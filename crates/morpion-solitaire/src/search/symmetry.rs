@@ -32,7 +32,7 @@ pub fn apply_transform(t: usize, (x, y): Pos, k: i16) -> Pos {
 
 /// The **linear part** of [`apply_transform`] (translation dropped): the D4 action on
 /// a *displacement* (a vector/offset, anchor-fixed), i.e. `apply_transform(t, p, 0)`.
-/// Used to transform motif moves relative to their anchor (`search::macros`).
+/// Used to transform motif moves relative to their anchor (`search::nrpa::macros`).
 #[inline]
 pub fn lin_transform(t: usize, p: Pos) -> Pos {
     apply_transform(t, p, 0)

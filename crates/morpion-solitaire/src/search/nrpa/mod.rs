@@ -24,6 +24,10 @@
 pub mod plugin;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perturbation;
+// Macro-actions (multi-move motifs mined from records) — an NRPA-only action-space lever
+// (the engine reads it in `island`). Native-only: it uses `move_playable`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod macros;
 
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::Ordering, Arc};
@@ -1270,8 +1274,8 @@ fn build_base_sym(state: &GameState) -> SymmetryHashes {
 /// like the record corpus); macros only engage on a 5T search. The motif length and
 /// library size are read from the `macro-k`/`macro-topn` options at first build.
 #[cfg(not(target_arch = "wasm32"))]
-fn macro_lib() -> &'static crate::search::macros::MotifLib {
-    use crate::search::macros::{motif_library, MotifLib};
+fn macro_lib() -> &'static crate::search::nrpa::macros::MotifLib {
+    use crate::search::nrpa::macros::{motif_library, MotifLib};
     static L: std::sync::OnceLock<MotifLib> = std::sync::OnceLock::new();
     L.get_or_init(|| {
         let reg = crate::search::plugin::registry();
@@ -1301,7 +1305,7 @@ fn macro_nrpa(
     scratch: &mut GameState,
     base_sym: &SymmetryHashes,
     search: &Arc<SearchState>,
-    lib: &crate::search::macros::MotifLib,
+    lib: &crate::search::nrpa::macros::MotifLib,
 ) -> Vec<ActStep> {
     if !search.running.load(Ordering::Relaxed) {
         return Vec::new();
@@ -1340,9 +1344,9 @@ fn macro_playout(
     scratch: &mut GameState,
     base_sym: &SymmetryHashes,
     search: &Arc<SearchState>,
-    lib: &crate::search::macros::MotifLib,
+    lib: &crate::search::nrpa::macros::MotifLib,
 ) -> Vec<ActStep> {
-    use crate::search::macros::MacroInstance;
+    use crate::search::nrpa::macros::MacroInstance;
     let mut sym = base_sym.clone();
     let start = scratch.history.len();
     let mut rng = rand::rng();
@@ -1446,10 +1450,10 @@ fn macro_adapt(
     policy: &mut Policy,
     scratch: &mut GameState,
     base_sym: &SymmetryHashes,
-    lib: &crate::search::macros::MotifLib,
+    lib: &crate::search::nrpa::macros::MotifLib,
     best: &[ActStep],
 ) {
-    use crate::search::macros::MacroInstance;
+    use crate::search::nrpa::macros::MacroInstance;
     let mut sym = base_sym.clone();
     let start = scratch.history.len();
     let inv_temp = TEMP_INV.with(|c| c.get());
