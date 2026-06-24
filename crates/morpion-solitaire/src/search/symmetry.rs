@@ -262,6 +262,15 @@ impl SymmetryHashes {
         }
     }
 
+    /// Toggle only the identity hash (`hashes[0]`) — for the `NRPA_SYM=0` path,
+    /// which codes in the identity frame ([`move_coder_id`](Self::move_coder_id))
+    /// and so needs no other transform's hash. 8× cheaper than [`toggle`](Self::toggle)
+    /// in the hot loop; the other 7 hashes go stale but are never read in that mode.
+    #[inline]
+    pub fn toggle_identity(&mut self, pos: Pos) {
+        self.hashes[0] ^= zobrist_value(pos);
+    }
+
     /// The canonical hash: minimum of all 8 transform hashes.
     pub fn canonical(&self) -> u64 {
         self.hashes.iter().copied().min().unwrap()
