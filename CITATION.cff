@@ -12,8 +12,8 @@ authors:
 repository-code: "https://github.com/sjourdois/morpion-solitaire"
 url: "https://morpion-solitaire.io"
 license: GPL-3.0-or-later
-version: 0.1.5
-date-released: 2026-06-17
+version: 0.2.0
+date-released: 2026-06-24
 keywords:
   - morpion-solitaire
   - puzzle
