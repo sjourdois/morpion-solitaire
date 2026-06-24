@@ -926,12 +926,17 @@ fn playout(
     let prior = prior_active();
     let inv_temp = TEMP_INV.with(|c| c.get());
     let local = nrpa_local();
-    let sym_on = crate::search::plugin::registry().sym_on();
+    let reg = crate::search::plugin::registry();
+    let sym_on = reg.sym_on();
+    // Active move-bias modifier (e.g. a neural prior), resolved once: the hot loop
+    // branches on this `Option`, so a core build (no bias plugin) pays nothing.
+    let bias = reg.bias_modifier();
     // Buffers reused across every step of this playout (cleared per step) so the
     // hottest loop in the search does no per-node heap allocation.
     let mut moves: Vec<Move> = Vec::new();
     let mut moves_next: Vec<Move> = Vec::new();
     let mut weights: Vec<f64> = Vec::new();
+    let mut nbuf: Vec<f64> = Vec::new();
 
     // Incremental legal-move maintenance: one full scan at entry, then each step
     // derives the next set from the played move instead of rescanning the board.
@@ -948,7 +953,26 @@ fn playout(
         // the transcendental for them — the common case while the policy is sparse.
         let coder = sym.move_coder();
         weights.clear();
-        if !prior {
+        if let Some(b) = bias {
+            // A move-bias modifier (neural prior) is active: add its per-move
+            // log-space bias (and the GNRPA/corpus β when that's also on) to each
+            // logit. One batched call per step.
+            nbuf.clear();
+            b.biases(scratch, &moves, &mut nbuf);
+            weights.extend(moves.iter().enumerate().map(|(i, mv)| {
+                let nb = nbuf.get(i).copied().unwrap_or(0.0);
+                let w = policy
+                    .get(&move_code(&coder, scratch, mv, local))
+                    .copied()
+                    .unwrap_or(0.0);
+                let logit = if prior {
+                    w + nb + beta(scratch, mv.pos)
+                } else {
+                    w + nb
+                };
+                (logit * inv_temp).exp()
+            }));
+        } else if !prior {
             // Cold fast path (no GNRPA/corpus bias): weight is exp(w/τ) for a seen
             // code, exp(0)=1 for an unseen one — no `beta` per move.
             weights.extend(moves.iter().map(|mv| {
@@ -1034,12 +1058,14 @@ fn adapt(
         None => reg.clamp(),
     };
     let alpha = reg.alpha();
+    let bias = reg.bias_modifier();
     // Reused per step (cleared each iteration). `codes` lets us hash each move's
     // symmetry code once and reuse it for both the softmax and the update.
     let mut moves: Vec<Move> = Vec::new();
     let mut moves_next: Vec<Move> = Vec::new();
     let mut codes: Vec<u64> = Vec::new();
     let mut exps: Vec<f64> = Vec::new();
+    let mut nbuf: Vec<f64> = Vec::new();
 
     // Incremental legal set (one scan, then derived per step) — see `playout`.
     legal_moves_into(scratch, &mut moves);
@@ -1054,16 +1080,33 @@ fn adapt(
         codes.clear();
         codes.extend(moves.iter().map(|m| move_code(&coder, scratch, m, local)));
         exps.clear();
-        exps.extend(
-            codes
-                .iter()
-                .zip(&moves)
-                .map(|(code, m)| match policy.get(code) {
-                    Some(&w) => ((w + beta(scratch, m.pos)) * inv_temp).exp(),
-                    None if !prior => 1.0,
-                    None => (beta(scratch, m.pos) * inv_temp).exp(),
-                }),
-        );
+        if let Some(b) = bias {
+            // Bias modifier (neural prior) active: same softmax as `playout`, with the
+            // per-move neural bias (and β when GNRPA/corpus is also on) in each logit.
+            nbuf.clear();
+            b.biases(scratch, &moves, &mut nbuf);
+            exps.extend(codes.iter().zip(&moves).enumerate().map(|(i, (code, m))| {
+                let nb = nbuf.get(i).copied().unwrap_or(0.0);
+                let w = policy.get(code).copied().unwrap_or(0.0);
+                let logit = if prior {
+                    w + nb + beta(scratch, m.pos)
+                } else {
+                    w + nb
+                };
+                (logit * inv_temp).exp()
+            }));
+        } else {
+            exps.extend(
+                codes
+                    .iter()
+                    .zip(&moves)
+                    .map(|(code, m)| match policy.get(code) {
+                        Some(&w) => ((w + beta(scratch, m.pos)) * inv_temp).exp(),
+                        None if !prior => 1.0,
+                        None => (beta(scratch, m.pos) * inv_temp).exp(),
+                    }),
+            );
+        }
         let z: f64 = exps.iter().sum();
 
         // chosen += α ; each legal -= α · P(move). Optionally clamp the touched
