@@ -23,13 +23,18 @@ pub mod selfplay;
 pub mod tabula_rasa;
 pub mod train;
 
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+
+use rustc_hash::FxHashMap;
 
 use crate::game::{moves::Move, state::GameState};
 use crate::search::plugin::{
     self, BiasModifier, Method, OptionKind, OptionSpec, Plugin, Registry, Scope, StartCtx,
 };
 use crate::search::SearchState;
+use features::PatchKey;
 use net::{MovePrior, NeuralPrior};
 
 /// Default neural-prior strength (β scale). The sweet spot measured on 5T ≈ 4.
@@ -45,6 +50,36 @@ fn armed() -> &'static RwLock<Option<Arc<NeuralPrior>>> {
 /// Is a prior currently armed? (Read at search start to decide the hot-loop path.)
 pub fn is_armed() -> bool {
     armed().read().unwrap().is_some()
+}
+
+/// Cache generation, bumped whenever the armed prior changes. Each thread's bias cache
+/// (keyed by local pattern) carries the generation it was filled at and clears itself
+/// when it falls behind — so a new prior (or disarm) never serves stale logits.
+static GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Bump the cache generation — invalidates every thread's bias cache lazily.
+fn bump_generation() {
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Per-thread cache of the net's **raw** per-move logit, keyed by the move's local
+/// pattern ([`PatchKey`]). The scale is applied at read time (so annealing it never
+/// invalidates the cache), and the whole map is dropped when the prior changes (the
+/// generation moves). Two `(state, move)` pairs with the same local pattern share an
+/// entry — a lazy NN→table distillation: the net forward (the costly part) runs once
+/// per distinct pattern instead of once per node. The pattern key ignores the two
+/// global scalars (game progress, density), so a recurring pattern reuses the logit
+/// from its first sighting — the small approximation the throughput win is worth.
+struct BiasCache {
+    generation: u64,
+    map: FxHashMap<PatchKey, f64>,
+}
+
+thread_local! {
+    static BIAS_CACHE: RefCell<BiasCache> = RefCell::new(BiasCache {
+        generation: 0,
+        map: FxHashMap::default(),
+    });
 }
 
 /// Set the prior strength (β scale) for subsequent searches by writing the registry's
@@ -164,11 +199,40 @@ impl BiasModifier for NeuralBias {
             return; // disarmed between resolve and call — treat as all-zero
         };
         let scale = plugin::registry().value_f64("neural-scale", DEFAULT_SCALE);
-        // Encode each legal move's local patch, then one batched net forward. (No
-        // per-pattern cache yet — correctness first; the neural-guide cache is a later
-        // throughput commit.)
-        let feats: Vec<Vec<f32>> = moves.iter().map(|m| features::encode(state, m)).collect();
-        out.extend(prior.biases(&feats).into_iter().map(|b| b * scale));
+        let generation = GENERATION.load(Ordering::Relaxed);
+        BIAS_CACHE.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            if cache.generation != generation {
+                cache.generation = generation;
+                cache.map.clear();
+            }
+            // Key each move by its local pattern; the net forward runs only on the
+            // patterns not already cached this generation.
+            let mut keys: Vec<PatchKey> = Vec::with_capacity(moves.len());
+            let mut miss_keys: Vec<PatchKey> = Vec::new();
+            let mut miss_feats: Vec<Vec<f32>> = Vec::new();
+            for mv in moves {
+                let (key, feat) = features::encode_keyed(state, mv);
+                if !cache.map.contains_key(&key) {
+                    miss_keys.push(key);
+                    miss_feats.push(feat);
+                }
+                keys.push(key);
+            }
+            if !miss_feats.is_empty() {
+                let logits = prior
+                    .logits(&miss_feats)
+                    .unwrap_or_else(|_| vec![0.0; miss_feats.len()]);
+                for (k, l) in miss_keys.iter().zip(logits) {
+                    cache.map.insert(*k, l as f64);
+                }
+            }
+            // Read every move's (scaled) logit from the cache, in order.
+            out.extend(
+                keys.iter()
+                    .map(|k| cache.map.get(k).copied().unwrap_or(0.0) * scale),
+            );
+        });
     }
 }
 static NEURAL_BIAS: NeuralBias = NeuralBias;
@@ -279,9 +343,10 @@ pub mod prior {
 
     /// Arm (or clear, with `None`) the prior for subsequent NRPA searches — every
     /// playout/adapt then adds its learned per-move bias. Call **before** launching
-    /// the search.
+    /// the search. Bumps the cache generation so no thread serves stale logits.
     pub fn arm(prior: Option<Arc<NeuralPrior>>) {
         *armed().write().unwrap() = prior;
+        super::bump_generation();
     }
 
     /// Like [`arm`] but takes ownership of a fresh prior (the common case).
@@ -295,11 +360,17 @@ mod tests {
     use super::*;
     use crate::game::moves::legal_moves;
     use crate::game::rules::Variant;
+    use std::sync::Mutex;
+
+    // Tests that arm the process-global prior must not run concurrently (the armed slot
+    // is shared); serialize them on this lock.
+    static ARM_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// The bundled 5T prior loads and produces one finite bias per legal move, and
     /// arming/disarming flips the modifier's active state.
     #[test]
     fn bundled_prior_biases_legal_moves() {
+        let _g = ARM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Some(p) = prior::bundled(Variant::T5) else {
             panic!("bundled 5T prior should be committed");
         };
@@ -344,5 +415,33 @@ mod tests {
         let b = net::MovePrior::biases(&p, &feats);
         assert_eq!(b.len(), moves.len());
         assert!(b.iter().all(|x| x.is_finite()));
+    }
+
+    /// The per-pattern bias cache is transparent: a second call for the same position
+    /// (served from the cache) matches the first (computed by the net), and re-arming
+    /// bumps the generation so the cache is rebuilt without serving stale logits.
+    #[test]
+    fn bias_cache_is_transparent_and_generation_aware() {
+        let _g = ARM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let p = prior::bundled(Variant::T5).expect("bundled prior");
+        prior::install(Some(p));
+        let st = GameState::new(Variant::T5);
+        let moves = legal_moves(&st);
+
+        let mut first = Vec::new();
+        NEURAL_BIAS.biases(&st, &moves, &mut first); // misses → net forward, fills cache
+        let mut second = Vec::new();
+        NEURAL_BIAS.biases(&st, &moves, &mut second); // hits → from cache
+        assert_eq!(first, second, "cache hit must match the computed result");
+        assert!(first.iter().all(|x| x.is_finite()));
+
+        // Re-arm the same prior: generation bumps, cache clears, result is consistent.
+        prior::arm(None);
+        prior::install(prior::bundled(Variant::T5));
+        let mut third = Vec::new();
+        NEURAL_BIAS.biases(&st, &moves, &mut third);
+        assert_eq!(first, third, "a fresh generation reproduces the same logits");
+
+        prior::arm(None);
     }
 }
