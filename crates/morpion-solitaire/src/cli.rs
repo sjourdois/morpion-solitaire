@@ -58,6 +58,11 @@ enum Command {
     Records(RecordsArgs),
     /// Micro-benchmark an engine's throughput (nodes/second).
     Bench(BenchArgs),
+    /// Train a neural move prior from scratch by cold-start Expert Iteration — no
+    /// human records (feature `neural`). Writes the trained prior (and optionally the
+    /// elite corpus it trained on); use it with `search --prior <FILE>`.
+    #[cfg(feature = "neural")]
+    TabulaRasa(TabulaRasaArgs),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -234,6 +239,42 @@ struct RecordsArgs {
     category: Option<String>,
 }
 
+#[cfg(feature = "neural")]
+#[derive(Args)]
+struct TabulaRasaArgs {
+    /// Expert-Iteration rounds (round 0 is the cold NRPA seed; 1.. are prior-guided).
+    #[arg(long, default_value_t = 12)]
+    rounds: usize,
+    /// Search budget per round (split across islands): `60s`, `5m`, …
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration, default_value = "60s")]
+    secs: Duration,
+    /// Independent searches per round (elite diversity; budget is split across them).
+    #[arg(long, default_value_t = 4)]
+    islands: usize,
+    /// NRPA nesting level used for generation.
+    #[arg(long, default_value_t = 3)]
+    level: usize,
+    /// Training epochs per round.
+    #[arg(long, default_value_t = 30)]
+    epochs: usize,
+    /// Max games kept in the elite (best-by-length, de-duplicated).
+    #[arg(long, default_value_t = 40)]
+    elite: usize,
+    /// Prior strength (β scale) at the first guided round.
+    #[arg(long, default_value_t = 4.0)]
+    scale: f64,
+    /// Prior strength at the last round — `scale` is annealed down to this across the
+    /// guided rounds (default: no annealing, == `scale`).
+    #[arg(long, value_name = "F")]
+    scale_min: Option<f64>,
+    /// Write the trained prior here (safetensors).
+    #[arg(long, short = 'o', value_name = "FILE")]
+    out: PathBuf,
+    /// Also write the elite corpus the prior trained on (JSON array of games).
+    #[arg(long, value_name = "FILE")]
+    save_corpus: Option<PathBuf>,
+}
+
 #[derive(Args)]
 struct BenchArgs {
     /// Engine to measure.
@@ -336,6 +377,8 @@ fn run(cmd: Command, variant: Variant) -> Result<(), String> {
         Command::Convert(a) => cmd_convert(a, variant),
         Command::Records(a) => cmd_records(a),
         Command::Bench(a) => cmd_bench(a, variant),
+        #[cfg(feature = "neural")]
+        Command::TabulaRasa(a) => cmd_tabula_rasa(a, variant),
     }
 }
 
@@ -803,6 +846,65 @@ fn cmd_bench(a: BenchArgs, variant: Variant) -> Result<(), String> {
         variant.name(),
         nodes as f64 / secs
     );
+    Ok(())
+}
+
+// ── tabula-rasa ───────────────────────────────────────────────────────────────
+
+#[cfg(feature = "neural")]
+fn cmd_tabula_rasa(a: TabulaRasaArgs, variant: Variant) -> Result<(), String> {
+    use crate::search::neural::{prior, tabula_rasa};
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
+    let cfg = tabula_rasa::TabulaRasaConfig {
+        variant,
+        rounds: a.rounds,
+        secs_per_round: a.secs.as_secs_f64(),
+        islands: a.islands,
+        level: a.level,
+        epochs: a.epochs,
+        lr: 1e-3,
+        elite: a.elite,
+        scale: a.scale,
+        scale_min: a.scale_min.unwrap_or(a.scale),
+    };
+
+    // Graceful Ctrl-C: the loop polls this and returns the best prior so far.
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let c = cancel.clone();
+        let _ = ctrlc::set_handler(move || c.store(true, Ordering::Relaxed));
+    }
+
+    eprintln!(
+        "tabula-rasa {} — {} rounds × {:.0}s × {} islands, L{}, β {}→{}",
+        variant.name(),
+        cfg.rounds,
+        cfg.secs_per_round,
+        cfg.islands,
+        cfg.level,
+        cfg.scale,
+        cfg.scale_min,
+    );
+
+    let (trained, corpus) = tabula_rasa::train(&cfg, &cancel, |r| {
+        eprintln!(
+            "round {:>2}  found={:>3}  best={:>3}  β={:.2}  elite=[{}..{}]×{}",
+            r.round, r.found, r.best_ever, r.scale, r.elite_min, r.elite_max, r.elite_size
+        );
+    })
+    .map_err(|e| e.to_string())?;
+
+    prior::save(&trained, &a.out.to_string_lossy()).map_err(|e| e.to_string())?;
+    eprintln!("wrote prior: {}", a.out.display());
+
+    if let Some(path) = &a.save_corpus {
+        let json = serde_json::to_string(&corpus).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        eprintln!("wrote corpus: {} ({} games)", path.display(), corpus.len());
+    }
+    let best = corpus.iter().map(|g| g.len()).max().unwrap_or(0);
+    eprintln!("done — best game {best} moves");
     Ok(())
 }
 
