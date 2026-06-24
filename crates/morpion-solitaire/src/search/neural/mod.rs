@@ -31,9 +31,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use rustc_hash::FxHashMap;
 
 use crate::game::{moves::Move, state::GameState};
-use crate::search::plugin::{
-    self, BiasModifier, Method, OptionKind, OptionSpec, Plugin, Registry, Scope, StartCtx,
-};
+// The neural *plugins* (registration) live under `search::plugin::{nrpa::neural_bias,
+// nrpa::feature_space, puct}`; this module is the neural *engine* they wire in.
+use crate::search::plugin::{self, BiasModifier};
 use crate::search::SearchState;
 use features::PatchKey;
 use net::{MovePrior, NeuralPrior, ValuePredictor};
@@ -185,71 +185,10 @@ pub fn run_puct_armed(search: Arc<SearchState>, variant: crate::game::rules::Var
     }
 }
 
-/// PUCT (policy + value tree search) as a registry method: the armed neural prior is
-/// the policy (uniform if none), with rollout-grounded leaf evaluation. The value-net
-/// leaf (`LeafEval::Value`) is wired in the net/training code but not yet exposed here.
-struct PuctMethod;
-impl Method for PuctMethod {
-    fn id(&self) -> &'static str {
-        "puct"
-    }
-    fn label_key(&self) -> &'static str {
-        "algo-puct"
-    }
-    fn spawn(&self, ctx: StartCtx, search: Arc<SearchState>) {
-        let StartCtx { variant, .. } = ctx;
-        std::thread::spawn(move || run_puct_armed(search, variant));
-    }
-    fn method_desc(&self, _ctx: &StartCtx) -> String {
-        let c = plugin::registry().value_f64("c-puct", 1.5);
-        let policy = if is_armed() { "neural" } else { "uniform" };
-        let leaf = if armed_value().is_some() {
-            "value"
-        } else {
-            "rollout"
-        };
-        format!("puct c={c:.2} policy={policy} leaf={leaf}")
-    }
-    fn checkpoint_kind(&self) -> Option<&'static str> {
-        None
-    }
-}
-static PUCT_METHOD: PuctMethod = PuctMethod;
-
-/// The PUCT plugin: contributes the method + its `c-puct` exploration option. Compiled
-/// only under the `neural` feature (it needs the policy net).
-pub struct PuctPlugin;
-impl Plugin for PuctPlugin {
-    fn id(&self) -> &'static str {
-        "puct"
-    }
-    fn experimental(&self) -> bool {
-        true
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_method(&PUCT_METHOD);
-        reg.add_option(OptionSpec {
-            key: "c-puct",
-            label_key: "opt-c-puct",
-            help_key: "opt-c-puct-hint",
-            help: "PUCT exploration constant (higher = more exploration). Default 1.5.",
-            kind: OptionKind::Float {
-                default: 1.5,
-                min: 0.1,
-                max: 5.0,
-                step: 0.1,
-            },
-            scope: Scope::Methods(&["puct"]),
-        });
-    }
-}
-/// The static PUCT plugin, pushed into the registry under the `neural` feature.
-pub static PUCT_PLUGIN: PuctPlugin = PuctPlugin;
-
 /// The registry's neural move-bias modifier: encodes each candidate move locally,
 /// runs the armed prior, and returns the scaled per-move logits. Inactive (and
 /// zero-cost) when no prior is armed.
-struct NeuralBias;
+pub struct NeuralBias;
 impl BiasModifier for NeuralBias {
     fn active(&self) -> bool {
         is_armed()
@@ -297,67 +236,9 @@ impl BiasModifier for NeuralBias {
         });
     }
 }
-static NEURAL_BIAS: NeuralBias = NeuralBias;
-
-/// The neural plugin: contributes the move-bias hook and the `--neural-scale` option.
-/// Depends on `nrpa` (the bias only means anything inside the NRPA softmax), so it is
-/// dropped in a build without it.
-pub struct NeuralPlugin;
-impl Plugin for NeuralPlugin {
-    fn id(&self) -> &'static str {
-        "neural"
-    }
-    fn deps(&self) -> &'static [&'static str] {
-        &["nrpa"]
-    }
-    fn experimental(&self) -> bool {
-        true
-    }
-    fn register(&self, reg: &mut Registry) {
-        reg.add_bias(&NEURAL_BIAS);
-        reg.add_option(OptionSpec {
-            key: "neural-scale",
-            label_key: "opt-neural-scale",
-            help_key: "opt-neural-scale-hint",
-            help: "Neural-prior strength (β scale). Sweet spot ≈ 4; only applies with \
-                   --prior. Read once per search.",
-            kind: OptionKind::Float {
-                default: DEFAULT_SCALE,
-                min: 0.1,
-                max: 10.0,
-                step: 0.5,
-            },
-            scope: Scope::NrpaFamily,
-        });
-        // Feature-space NRPA (φ-B): adapt a head θ over the net's frozen features
-        // online, in place of the frozen bias. Experimental; needs a prior.
-        reg.add_option(OptionSpec {
-            key: "feat-adapt",
-            label_key: "opt-feat-adapt",
-            help_key: "opt-feat-adapt-hint",
-            help: "Feature-space NRPA: adapt a linear head θ over the net's frozen \
-                   features online (φ-B) instead of a frozen prior bias. Needs --prior. \
-                   Experimental.",
-            kind: OptionKind::Toggle { default: false },
-            scope: Scope::NrpaFamily,
-        });
-        reg.add_option(OptionSpec {
-            key: "feat-alpha",
-            label_key: "opt-feat-alpha",
-            help_key: "opt-feat-alpha-hint",
-            help: "Feature-space head step size α_θ (default 0.1). Only with --feat-adapt.",
-            kind: OptionKind::Float {
-                default: feat::DEFAULT_FEAT_ALPHA,
-                min: 0.01,
-                max: 1.0,
-                step: 0.01,
-            },
-            scope: Scope::NrpaFamily,
-        });
-    }
-}
-/// The static plugin instance, pushed into the registry under the `neural` feature.
-pub static NEURAL_PLUGIN: NeuralPlugin = NeuralPlugin;
+/// The neural move-bias modifier, wired into the registry by the `neural_bias` plugin
+/// (`search::plugin::nrpa::neural_bias`).
+pub static NEURAL_BIAS: NeuralBias = NeuralBias;
 
 /// Convenience API to load, persist, and arm a move prior — the plumbing the CLI/GUI
 /// use. The search infers on CPU (per-state, many threads), so a prior is always
