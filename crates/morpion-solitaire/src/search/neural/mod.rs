@@ -17,6 +17,9 @@ pub mod dataset;
 pub mod embedded;
 pub mod features;
 pub mod net;
+pub mod position;
+pub mod puct;
+pub mod selfplay;
 pub mod tabula_rasa;
 pub mod train;
 
@@ -24,8 +27,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::game::{moves::Move, state::GameState};
 use crate::search::plugin::{
-    self, BiasModifier, OptionKind, OptionSpec, Plugin, Registry, Scope,
+    self, BiasModifier, Method, OptionKind, OptionSpec, Plugin, Registry, Scope, StartCtx,
 };
+use crate::search::SearchState;
 use net::{MovePrior, NeuralPrior};
 
 /// Default neural-prior strength (β scale). The sweet spot measured on 5T ≈ 4.
@@ -54,6 +58,96 @@ pub fn set_scale(scale: f64) {
 pub fn reset_scale() {
     set_scale(DEFAULT_SCALE);
 }
+
+/// The currently armed prior as a shared handle (for methods that consume it directly,
+/// e.g. PUCT's policy). `None` ⇒ no prior armed.
+pub fn armed_arc() -> Option<Arc<NeuralPrior>> {
+    armed().read().unwrap().clone()
+}
+
+// ---- PUCT method plugin ---------------------------------------------------
+
+/// A zero-bias policy: every move equally likely. PUCT uses this when no neural prior
+/// is armed — it then degrades to rollout-grounded MCTS, still a valid search.
+struct UniformPrior;
+impl MovePrior for UniformPrior {
+    fn biases(&self, features: &[Vec<f32>]) -> Vec<f64> {
+        vec![0.0; features.len()]
+    }
+}
+static UNIFORM_PRIOR: UniformPrior = UniformPrior;
+
+/// Run PUCT to completion on the current thread, using the armed neural prior as the
+/// policy (uniform if none) and the `c-puct` option, with rollout-grounded leaves.
+/// Shared by the PUCT method (CLI) and the GUI dispatch.
+pub fn run_puct_armed(search: Arc<SearchState>, variant: crate::game::rules::Variant) {
+    let c_puct = plugin::registry().value_f64("c-puct", 1.5);
+    let cfg = puct::PuctConfig {
+        c_puct,
+        leaf: puct::LeafEval::Rollout,
+        rollout_inv_temp: 1.0,
+    };
+    match armed_arc() {
+        Some(p) => puct::run_puct(search, variant, p.as_ref(), None, &cfg),
+        None => puct::run_puct(search, variant, &UNIFORM_PRIOR, None, &cfg),
+    }
+}
+
+/// PUCT (policy + value tree search) as a registry method: the armed neural prior is
+/// the policy (uniform if none), with rollout-grounded leaf evaluation. The value-net
+/// leaf (`LeafEval::Value`) is wired in the net/training code but not yet exposed here.
+struct PuctMethod;
+impl Method for PuctMethod {
+    fn id(&self) -> &'static str {
+        "puct"
+    }
+    fn label_key(&self) -> &'static str {
+        "algo-puct"
+    }
+    fn spawn(&self, ctx: StartCtx, search: Arc<SearchState>) {
+        let StartCtx { variant, .. } = ctx;
+        std::thread::spawn(move || run_puct_armed(search, variant));
+    }
+    fn method_desc(&self, _ctx: &StartCtx) -> String {
+        let c = plugin::registry().value_f64("c-puct", 1.5);
+        let policy = if is_armed() { "neural" } else { "uniform" };
+        format!("puct c={c:.2} policy={policy}")
+    }
+    fn checkpoint_kind(&self) -> Option<&'static str> {
+        None
+    }
+}
+static PUCT_METHOD: PuctMethod = PuctMethod;
+
+/// The PUCT plugin: contributes the method + its `c-puct` exploration option. Compiled
+/// only under the `neural` feature (it needs the policy net).
+pub struct PuctPlugin;
+impl Plugin for PuctPlugin {
+    fn id(&self) -> &'static str {
+        "puct"
+    }
+    fn experimental(&self) -> bool {
+        true
+    }
+    fn register(&self, reg: &mut Registry) {
+        reg.add_method(&PUCT_METHOD);
+        reg.add_option(OptionSpec {
+            key: "c-puct",
+            label_key: "opt-c-puct",
+            help_key: "opt-c-puct-hint",
+            help: "PUCT exploration constant (higher = more exploration). Default 1.5.",
+            kind: OptionKind::Float {
+                default: 1.5,
+                min: 0.1,
+                max: 5.0,
+                step: 0.1,
+            },
+            scope: Scope::Methods(&["puct"]),
+        });
+    }
+}
+/// The static PUCT plugin, pushed into the registry under the `neural` feature.
+pub static PUCT_PLUGIN: PuctPlugin = PuctPlugin;
 
 /// The registry's neural move-bias modifier: encodes each candidate move locally,
 /// runs the armed prior, and returns the scaled per-move logits. Inactive (and
