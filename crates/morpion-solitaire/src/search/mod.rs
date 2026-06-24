@@ -2,10 +2,6 @@ pub mod beam;
 pub mod bounds;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod checkpoint;
-// Macro-actions (multi-move motifs mined from records) — an NRPA action-space lever.
-// Native-only: it tests move legality via `nrpa::move_playable` (native).
-#[cfg(not(target_arch = "wasm32"))]
-pub mod macros;
 #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
 pub mod neural;
 pub mod nrpa;

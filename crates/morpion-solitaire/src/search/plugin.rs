@@ -15,8 +15,8 @@
 
 // This module is the plugin *framework* only (traits, the [`Registry`], declarative
 // options, the experimental gate, the hooks). Each plugin's *registration* lives with
-// its engine: `search::beam`, `search::systematic`, `search::macros`,
-// `search::nrpa::{plugin,perturbation}`, `search::neural::plugin`. [`all_plugins`]
+// its engine: `search::beam`, `search::systematic`,
+// `search::nrpa::{plugin,perturbation,macros}`, `search::neural::plugin`. [`all_plugins`]
 // gathers them.
 
 use std::collections::{HashMap, HashSet};
@@ -467,10 +467,9 @@ fn all_plugins() -> Vec<&'static dyn Plugin> {
     // Perturbation (OS threads) + its crossover modifier + macros are native-only.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use crate::search::macros;
         v.push(&nrpa::perturbation::PERTURBATION_PLUGIN);
         v.push(&nrpa::perturbation::CROSSOVER_PLUGIN);
-        v.push(&macros::MACROS_PLUGIN);
+        v.push(&nrpa::macros::MACROS_PLUGIN);
     }
     // The neural prior + feature-space head + PUCT (feature `neural`, native-only).
     #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]

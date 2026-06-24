@@ -11,8 +11,8 @@
 //! orientation matches everywhere it geometrically fits. Wiring the motifs into the
 //! search as `Action`s lives in `nrpa.rs` (next step).
 
-use super::nrpa::move_playable;
-use super::symmetry::{lin_transform, transform_dir};
+use super::move_playable; // the parent NRPA engine
+use crate::search::symmetry::{lin_transform, transform_dir};
 use crate::game::board::Pos;
 use crate::game::line::{Dir, Line};
 use crate::game::moves::Move;
