@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # monitor.sh — fleet status + global best across all instances (reads S3 only).
-# Usage: deploy/monitor.sh --run-id ID [--profile NAME]
+# Usage: tools/deploy/monitor.sh --run-id ID [--profile NAME]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -19,7 +19,7 @@ esac; done
 # shellcheck disable=SC1090
 source "$HERE/.state-$RUN_ID"
 P="aws --profile $PROFILE --region $REGION"
-REPLAY="$HERE/../target/release/morpion-solitaire"
+REPLAY="$HERE/../../target/release/morpion-solitaire"
 
 echo "=== fleet $FLEET_ID ==="
 $P ec2 describe-fleets --fleet-ids "$FLEET_ID" \
@@ -46,5 +46,5 @@ for pre in $($P s3 ls "s3://$BUCKET/$RUN_ID/inst/" 2>/dev/null | awk '{print $2}
   if [ "$sc" -gt "$BEST" ]; then BEST=$sc; cp "$TMP/$iid.msr" "$HERE/global-best-$RUN_ID.msr"; fi
 done
 echo "=== GLOBAL BEST = $BEST  (record to beat: 178) ==="
-[ "$BEST" -gt 0 ] && echo "    saved: deploy/global-best-$RUN_ID.msr"
+[ "$BEST" -gt 0 ] && echo "    saved: tools/deploy/global-best-$RUN_ID.msr"
 rm -rf "$TMP"

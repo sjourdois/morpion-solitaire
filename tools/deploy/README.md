@@ -1,10 +1,10 @@
-# `deploy/` — AWS spot fleet for record hunting
+# `tools/deploy/` — AWS spot fleet for record hunting
 
 Launch a fleet of cheap **spot** instances (AWS Graviton) that each run an
 independent Morpion Solitaire search and stream their best game to S3, so the
 global best accumulates across the fleet. The bet is **diversity × compute**: many
 independent island pools running for a long time maximise the chance of a
-record-breaking tail result (see `../docs/neural-guide.md`).
+record-breaking tail result.
 
 Everything runs on the plain **`dev`** AWS profile — `iam:PassRole` on
 `ms-fleet-role` was granted to it, so no admin profile is needed at run time.
@@ -16,11 +16,11 @@ Everything runs on the plain **`dev`** AWS profile — `iam:PassRole` on
 ```bash
 # 1. build the aarch64 binary once (see "Build the binary")
 # 2. launch a fleet
-deploy/deploy.sh --region eu-west-1 --run-id record --capacity 16 --level 4
+tools/deploy/deploy.sh --region eu-west-1 --run-id record --capacity 16 --level 4
 # 3. watch it (global best + ssh commands)
-deploy/monitor.sh --run-id record
+tools/deploy/monitor.sh --run-id record
 # 4. stop + clean up
-deploy/teardown.sh --run-id record
+tools/deploy/teardown.sh --run-id record
 ```
 
 ---
@@ -30,7 +30,7 @@ deploy/teardown.sh --run-id record
 | Script | What it does | How it's run |
 |---|---|---|
 | **`deploy.sh`** | Uploads the binary + `run-unit.sh` to S3, builds a launch template, and creates an EC2 Fleet (`type=maintain`) of spot instances spread over AZs and instance types. The fleet keeps the target capacity alive, auto-replacing interrupted spot instances. | **you**, with `--options` |
-| **`monitor.sh`** | Reads S3 + EC2: fleet status, the running instances (with a ready-to-paste `ssh` command each), every instance's best score, and the **global best** (saved to `deploy/global-best-<run>.msr`). | **you**, `--run-id …` |
+| **`monitor.sh`** | Reads S3 + EC2: fleet status, the running instances (with a ready-to-paste `ssh` command each), every instance's best score, and the **global best** (saved to `tools/deploy/global-best-<run>.msr`). | **you**, `--run-id …` |
 | **`teardown.sh`** | Deletes the fleet (terminating its instances), the launch template, and the security group. **Keeps** the S3 results, the bucket, and the IAM role/profile for reuse. | **you**, `--run-id …` |
 | **`run-unit.sh`** | The per-instance worker. Runs **one open-ended search** that self-bounds its RAM (`--max-memory 75%`) and writes `best.msr` + checkpoint + `progress.log` into a run dir, uploading them to S3 frequently and on a spot-interruption notice. A thin supervisor only restarts (resuming from the checkpoint) if the search crashes. | **the instance** (systemd), not by hand |
 | **`bootstrap.sh`** | EC2 *user-data*. `deploy.sh` substitutes its `@@PLACEHOLDERS@@` per run; on boot it pulls the binary + `run-unit.sh` from S3 and runs the unit under systemd (`Restart=always`). | **the instance**, at boot |
@@ -81,7 +81,7 @@ deploy/teardown.sh --run-id record
 ```
 
 `deploy.sh` is idempotent for a given `--run-id`: re-running it refreshes the launch
-template and grows/keeps the fleet. It writes `deploy/.state-<run>` for
+template and grows/keeps the fleet. It writes `tools/deploy/.state-<run>` for
 `monitor.sh`/`teardown.sh` (git-ignored).
 
 ---

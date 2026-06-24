@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # teardown.sh — stop a run: delete the fleet (terminate instances), launch
 # template, and SG. Keeps the S3 results and the shared bucket + IAM for reuse.
-# Usage: deploy/teardown.sh --run-id ID [--profile NAME]
+# Usage: tools/deploy/teardown.sh --run-id ID [--profile NAME]
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
