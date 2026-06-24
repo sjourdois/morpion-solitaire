@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — unreleased
+
+### Added
+
+- **Pluggable search architecture.** Search methods, their modifiers, and every
+  tuning option are now declared in a registry; the CLI flags and the GUI controls
+  are generated from it, so adding a lever is one self-contained plugin. The GUI
+  gains a redesigned **search-setup overlay** — engine tabs, per-engine options, a
+  live equivalent-CLI line — driven entirely by that registry.
+- **Headless CLI search operations.** Engine-tuning flags
+  (`--clamp`/`--alpha`/`--no-symmetry`/`--kmin`/`--kmax`/`--window`/`--crossover`)
+  and operational options for long runs (`--run-dir`, `--progress-log`,
+  `--max-memory`, `--nice`, `--checkpoint-interval`/`--resume`, `--ignore-overflow`).
+- **Genetic crossover** for perturbation search (`--crossover`).
+- **`--experimental` flag** (and a matching GUI toggle) gating a second tier of
+  lab-only engines and options. Off by default; the standard surface is unchanged.
+- **Neural search** — an optional `neural` build (native-only), all behind
+  `--experimental`: a neural **move prior** biasing NRPA (`--prior
+  bundled|corpus|scratch|FILE`, `--neural-scale`); from-scratch training via the
+  `tabula-rasa` command; **feature-space NRPA** (`--feat-adapt` and variants);
+  **macro-actions** (`--macros`); and **PUCT** policy+value tree search
+  (`--algo puct`, `--value-net`) with a `train-value` command.
+
+### Changed
+
+- **NRPA throughput ≈ ×3.6** via exact, behaviour-preserving changes: incremental
+  move generation, a symmetry-off fast path, and a cold-policy fast path.
+
 ## [0.1.5] — 2026-06-17
 
 ### Changed
