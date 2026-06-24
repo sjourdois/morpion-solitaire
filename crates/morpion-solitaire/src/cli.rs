@@ -68,6 +68,18 @@ enum AlgoArg {
     Beam,
 }
 
+impl AlgoArg {
+    /// The registry method id this `--algo` value maps to.
+    fn id(self) -> &'static str {
+        match self {
+            AlgoArg::Nrpa => "nrpa",
+            AlgoArg::Systematic => "systematic",
+            AlgoArg::Perturbation => "perturbation",
+            AlgoArg::Beam => "beam",
+        }
+    }
+}
+
 #[derive(Copy, Clone, ValueEnum)]
 enum Format {
     /// ASCII board for the terminal (the default).
@@ -529,46 +541,28 @@ fn spawn_search(
 
     let s = search.clone();
 
-    let method = match a.algo {
-        AlgoArg::Systematic => "systematic".to_owned(),
-        AlgoArg::Beam => format!("beam w={width}"),
-        AlgoArg::Perturbation => format!("perturbation L{level}"),
-        AlgoArg::Nrpa if warm_seq.is_some() => format!("nrpa-seeded L{level}"),
-        AlgoArg::Nrpa => format!("nrpa L{level}"),
+    // Dispatch through the plugin registry (docs/plugin-framework.md): build the
+    // launch context, then let the method spawn its own search thread.
+    let m = crate::search::plugin::registry()
+        .method(a.algo.id())
+        .expect("core method is registered");
+    let initial = from_state
+        .clone()
+        .unwrap_or_else(|| GameState::new(variant));
+    let seed_len = from_state.as_ref().map(|st| st.history.len()).unwrap_or(0);
+    let seed_history = from_state.map(|st| st.history).unwrap_or_default();
+    let ctx = crate::search::plugin::StartCtx {
+        initial,
+        variant,
+        level,
+        width,
+        warm_seq,
+        seed_history,
+        seed_len,
+        crossover: a.crossover,
     };
-
-    match a.algo {
-        AlgoArg::Perturbation => {
-            let seed = from_state.map(|st| st.history).unwrap_or_default();
-            let crossover = a.crossover;
-            std::thread::spawn(move || {
-                // The crossover rate is a per-thread override; set it on the loop's thread.
-                nrpa::set_crossover_override(crossover);
-                nrpa::run_perturbation(s, level, seed, variant);
-            });
-        }
-        AlgoArg::Systematic => {
-            let initial = from_state.unwrap_or_else(|| GameState::new(variant));
-            std::thread::spawn(move || systematic::run(&initial, s));
-        }
-        AlgoArg::Beam => {
-            let initial = from_state.unwrap_or_else(|| GameState::new(variant));
-            std::thread::spawn(move || beam::run(&initial, s, width));
-        }
-        AlgoArg::Nrpa => {
-            let initial = from_state.unwrap_or_else(|| GameState::new(variant));
-            match warm_seq {
-                Some(seq) => {
-                    std::thread::spawn(move || {
-                        nrpa::run_warm(&initial, s, level, &seq, nrpa::WARM_ITERS)
-                    });
-                }
-                None => {
-                    std::thread::spawn(move || nrpa::run(&initial, s, level));
-                }
-            }
-        }
-    }
+    let method = m.method_desc(&ctx);
+    m.spawn(ctx, s);
     Ok((variant, method))
 }
 
