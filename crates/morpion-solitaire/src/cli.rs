@@ -538,6 +538,9 @@ fn spawn_search(
     if let Some(w) = a.window {
         nrpa::set_perturb_window_override(w);
     }
+    if a.crossover > 0.0 {
+        crate::search::plugin::set_crossover(a.crossover);
+    }
 
     let s = search.clone();
 
@@ -559,7 +562,6 @@ fn spawn_search(
         warm_seq,
         seed_history,
         seed_len,
-        crossover: a.crossover,
     };
     let method = m.method_desc(&ctx);
     m.spawn(ctx, s);
