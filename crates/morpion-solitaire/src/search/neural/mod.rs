@@ -36,7 +36,7 @@ use crate::search::plugin::{
 };
 use crate::search::SearchState;
 use features::PatchKey;
-use net::{MovePrior, NeuralPrior};
+use net::{MovePrior, NeuralPrior, ValuePredictor};
 
 /// Default neural-prior strength (β scale). The sweet spot measured on 5T ≈ 4.
 pub const DEFAULT_SCALE: f64 = 4.0;
@@ -101,6 +101,55 @@ pub fn armed_arc() -> Option<Arc<NeuralPrior>> {
     armed().read().unwrap().clone()
 }
 
+/// The value net armed for PUCT's leaf evaluation. When set, PUCT uses
+/// `LeafEval::Value` (the net's position estimate) instead of a rollout.
+fn value_slot() -> &'static RwLock<Option<Arc<ValuePredictor>>> {
+    static V: OnceLock<RwLock<Option<Arc<ValuePredictor>>>> = OnceLock::new();
+    V.get_or_init(|| RwLock::new(None))
+}
+
+/// The currently armed value net (shared handle), or `None`.
+pub fn armed_value() -> Option<Arc<ValuePredictor>> {
+    value_slot().read().unwrap().clone()
+}
+
+/// Arm (or clear) the PUCT value net. Call before launching a PUCT search.
+pub fn install_value(v: Option<ValuePredictor>) {
+    *value_slot().write().unwrap() = v.map(Arc::new);
+}
+
+/// Load a value net saved by [`train_value_net`] (safetensors), on CPU.
+pub fn load_value(path: &str) -> candle_core::Result<ValuePredictor> {
+    ValuePredictor::load(path, candle_core::Device::Cpu)
+}
+
+/// Train a PUCT value net on CPU: generate length-varied games by self-play (uniform
+/// rollouts plus prior-guided ones at several temperatures — the spread the value net
+/// needs, since the record corpus is all long games), label each position with its
+/// game's final length, and regress. `n` games per bucket; `prior` guides the rollouts.
+pub fn train_value_net(
+    variant: crate::game::rules::Variant,
+    prior: Option<&NeuralPrior>,
+    n: usize,
+    epochs: usize,
+) -> candle_core::Result<ValuePredictor> {
+    use dataset::value_samples_from_games;
+    use selfplay::varied_games;
+    use train::{train_value, TrainConfig};
+    // Inverse temperatures spanning short→long games (0 = uniform is added by varied_games).
+    let temps = [0.5f64, 1.0, 2.0];
+    let prior_dyn: Option<&dyn MovePrior> = prior.map(|p| p as &dyn MovePrior);
+    let games = varied_games(variant, n, prior_dyn, &temps);
+    let samples = value_samples_from_games(variant, &games, true);
+    let (varmap, net) = train_value(
+        &samples,
+        &TrainConfig { epochs, lr: 1e-3 },
+        256,
+        candle_core::Device::Cpu,
+    )?;
+    Ok(ValuePredictor::new(net, varmap, candle_core::Device::Cpu))
+}
+
 // ---- PUCT method plugin ---------------------------------------------------
 
 /// A zero-bias policy: every move equally likely. PUCT uses this when no neural prior
@@ -118,14 +167,21 @@ static UNIFORM_PRIOR: UniformPrior = UniformPrior;
 /// Shared by the PUCT method (CLI) and the GUI dispatch.
 pub fn run_puct_armed(search: Arc<SearchState>, variant: crate::game::rules::Variant) {
     let c_puct = plugin::registry().value_f64("c-puct", 1.5);
+    // A value net armed (--value-net) ⇒ value-guided leaves; otherwise rollout leaves.
+    let value = armed_value();
     let cfg = puct::PuctConfig {
         c_puct,
-        leaf: puct::LeafEval::Rollout,
+        leaf: if value.is_some() {
+            puct::LeafEval::Value
+        } else {
+            puct::LeafEval::Rollout
+        },
         rollout_inv_temp: 1.0,
     };
+    let vp = value.as_deref();
     match armed_arc() {
-        Some(p) => puct::run_puct(search, variant, p.as_ref(), None, &cfg),
-        None => puct::run_puct(search, variant, &UNIFORM_PRIOR, None, &cfg),
+        Some(p) => puct::run_puct(search, variant, p.as_ref(), vp, &cfg),
+        None => puct::run_puct(search, variant, &UNIFORM_PRIOR, vp, &cfg),
     }
 }
 
@@ -147,7 +203,12 @@ impl Method for PuctMethod {
     fn method_desc(&self, _ctx: &StartCtx) -> String {
         let c = plugin::registry().value_f64("c-puct", 1.5);
         let policy = if is_armed() { "neural" } else { "uniform" };
-        format!("puct c={c:.2} policy={policy}")
+        let leaf = if armed_value().is_some() {
+            "value"
+        } else {
+            "rollout"
+        };
+        format!("puct c={c:.2} policy={policy} leaf={leaf}")
     }
     fn checkpoint_kind(&self) -> Option<&'static str> {
         None
