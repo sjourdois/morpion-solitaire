@@ -58,6 +58,10 @@ resvg = "0.47"          # rasterise the SVG renderer to PNG (CLI `show --png`)
 # dropped the old `async-std` feature in favour of `pollster`.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"], optional = true }
 arboard = { version = "3", optional = true }
+# Neural move prior (the `neural` feature; experimental, native-only). candle is the
+# Rust-native tensor/NN framework — no Python/libtorch. Optional and off by default.
+candle-core = { version = "0.10.2", optional = true }
+candle-nn = { version = "0.10.2", optional = true }
 
 # The browser build needs a tiny slice of the web platform for "save to file"
 # (no OS dialog/filesystem exists): a `Blob` downloaded via a synthetic anchor.
@@ -94,3 +98,13 @@ gui = [
     "dep:i18n-embed",
     "dep:i18n-embed-fl",
 ]
+# Experimental neural move prior for NRPA (a BiasModifier plugin; see src/search/neural
+# and docs/plugin-framework.md phase 5). Off by default — it pulls candle and is
+# native-only. Build/test it with `--features neural`.
+neural = ["dep:candle-core", "dep:candle-nn"]
+# GPU training/inference via candle's CUDA backend. Needs the CUDA toolkit (nvcc +
+# libcudart) at build time.
+neural-cuda = ["neural", "candle-core/cuda", "candle-nn/cuda"]
+# GPU training via candle's Metal backend (Apple Silicon). Accelerates training only;
+# the search infers on CPU (the per-state hot loop is launch-latency bound).
+neural-metal = ["neural", "candle-core/metal", "candle-nn/metal"]
