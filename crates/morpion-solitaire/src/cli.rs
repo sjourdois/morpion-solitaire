@@ -68,14 +68,6 @@ enum AlgoArg {
     Beam,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
-enum OverflowPolicy {
-    /// Stop the search on overflow (the routine already saves the best).
-    Stop,
-    /// Keep going (the grid then bounds the search); warn only once.
-    Continue,
-}
-
 #[derive(Copy, Clone, ValueEnum)]
 enum Format {
     /// ASCII board for the terminal (the default).
@@ -158,9 +150,10 @@ struct SearchArgs {
     /// Write the best game here (otherwise stdout). Always the msr format.
     #[arg(long, short = 'o', value_name = "FILE")]
     out: Option<PathBuf>,
-    /// What to do on grid overflow.
-    #[arg(long, value_enum, default_value_t = OverflowPolicy::Stop)]
-    on_overflow: OverflowPolicy,
+    /// Keep searching past a grid overflow instead of stopping. A game that hits
+    /// the fixed grid's edge is truncated — not a valid record; use only to probe.
+    #[arg(long)]
+    ignore_overflow: bool,
     /// Free-text description stored in the output.
     #[arg(long)]
     description: Option<String>,
@@ -306,7 +299,7 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
 
         if crate::game::board::GRID_OVERFLOW.swap(false, Ordering::Relaxed) {
             handle_overflow(&a, variant, best);
-            if matches!(a.on_overflow, OverflowPolicy::Stop) {
+            if !a.ignore_overflow {
                 search.running.store(false, Ordering::Relaxed);
             }
         }
