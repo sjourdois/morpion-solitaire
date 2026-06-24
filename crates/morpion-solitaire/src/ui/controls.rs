@@ -44,6 +44,54 @@ pub struct ResumeInfo {
     pub age: Duration,
 }
 
+/// Where the neural move prior comes from (feature `neural`). Drives the NRPA bias.
+/// `None` is plain NRPA; `Bundled` loads the shipped prior (instant); `Corpus` trains
+/// on the human records (~40 s); `TabulaRasa` trains from scratch (minutes); `File`
+/// loads a safetensors a user trained earlier. Persisted across launches.
+#[cfg(feature = "neural")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PriorSource {
+    None,
+    Bundled,
+    Corpus,
+    TabulaRasa,
+    File,
+}
+
+#[cfg(feature = "neural")]
+impl PriorSource {
+    /// Sources offered, in display order.
+    pub fn all() -> &'static [PriorSource] {
+        &[
+            PriorSource::None,
+            PriorSource::Bundled,
+            PriorSource::Corpus,
+            PriorSource::TabulaRasa,
+            PriorSource::File,
+        ]
+    }
+    /// i18n key for the radio label.
+    fn label_key(self) -> &'static str {
+        match self {
+            PriorSource::None => "prior-none",
+            PriorSource::Bundled => "prior-bundled",
+            PriorSource::Corpus => "prior-corpus",
+            PriorSource::TabulaRasa => "prior-tabula-rasa",
+            PriorSource::File => "prior-file",
+        }
+    }
+    /// i18n key for the radio tooltip.
+    fn hint_key(self) -> &'static str {
+        match self {
+            PriorSource::None => "prior-none-hint",
+            PriorSource::Bundled => "prior-bundled-hint",
+            PriorSource::Corpus => "prior-corpus-hint",
+            PriorSource::TabulaRasa => "prior-tabula-rasa-hint",
+            PriorSource::File => "prior-file-hint",
+        }
+    }
+}
+
 /// Output format for both the clipboard ("Copy") and the file export
 /// ("Export…"). The same selector drives both actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -130,6 +178,15 @@ pub struct ControlsInput {
     pub checkpoint_supported: bool,
     /// Present when a saved checkpoint exists on disk (enables & annotates Resume).
     pub resume: Option<ResumeInfo>,
+    /// Selected neural-prior source (feature `neural`).
+    #[cfg(feature = "neural")]
+    pub prior_source: PriorSource,
+    /// Already-localized prior status line (training/ready/error); empty ⇒ none shown.
+    #[cfg(feature = "neural")]
+    pub prior_status: String,
+    /// Whether a prior build/training is in progress (shows Cancel, locks the radio).
+    #[cfg(feature = "neural")]
+    pub prior_busy: bool,
 }
 
 #[derive(Default)]
@@ -158,6 +215,15 @@ pub struct ControlsOutput {
     pub toggle_theme: bool,
     pub show_shortcuts: bool,
     pub show_rules: bool,
+    /// Switch the neural-prior source (feature `neural`).
+    #[cfg(feature = "neural")]
+    pub set_prior_source: Option<PriorSource>,
+    /// Open a file dialog to load a prior (feature `neural`, `File` source).
+    #[cfg(feature = "neural")]
+    pub load_prior_file: bool,
+    /// Cancel an in-progress prior training (feature `neural`).
+    #[cfg(feature = "neural")]
+    pub cancel_training: bool,
 }
 
 pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
@@ -376,6 +442,11 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
         // scope for the chosen algorithm show (docs/plugin-framework.md).
         render_search_options(ui, input.algo, !input.search_running);
 
+        // Neural move prior (feature `neural`): source selector + status. The strength
+        // slider (`neural-scale`) already shows via the generic options above.
+        #[cfg(feature = "neural")]
+        render_prior_panel(ui, input, &mut out);
+
         // Starting point — the valid set depends on the algorithm. Perturbation
         // always perturbs the loaded game, so it shows a note instead of a choice.
         ui.add_space(6.0);
@@ -536,6 +607,47 @@ pub fn show(ui: &mut Ui, input: &ControlsInput) -> ControlsOutput {
     }
 
     out
+}
+
+/// The neural-prior panel (feature `neural`): a source selector (None/Bundled/Corpus/
+/// Tabula-rasa/File), a Load button for the File source, a Cancel button while
+/// training, and a status line. Shown only for the NRPA family (the only consumer of
+/// the bias). The strength slider is rendered by [`render_search_options`].
+#[cfg(feature = "neural")]
+fn render_prior_panel(ui: &mut Ui, input: &ControlsInput, out: &mut ControlsOutput) {
+    use crate::i18n::tr;
+    if !matches!(input.algo, SearchAlgo::Nrpa | SearchAlgo::Perturbation) {
+        return;
+    }
+    let l = &*LANGUAGE_LOADER;
+    ui.add_space(6.0);
+    ui.label(RichText::new(fl!(l, "prior-section")).strong());
+    ui.add_enabled_ui(!input.search_running && !input.prior_busy, |ui| {
+        egui::ComboBox::from_id_salt("prior_source")
+            .selected_text(tr(input.prior_source.label_key()))
+            .show_ui(ui, |ui| {
+                for &s in PriorSource::all() {
+                    if ui
+                        .selectable_label(input.prior_source == s, tr(s.label_key()))
+                        .on_hover_text(tr(s.hint_key()))
+                        .clicked()
+                    {
+                        out.set_prior_source = Some(s);
+                    }
+                }
+            });
+        if input.prior_source == PriorSource::File
+            && ui.button(fl!(l, "btn-load-prior")).clicked()
+        {
+            out.load_prior_file = true;
+        }
+    });
+    if input.prior_busy && ui.button(fl!(l, "btn-cancel-training")).clicked() {
+        out.cancel_training = true;
+    }
+    if !input.prior_status.is_empty() {
+        ui.label(RichText::new(&input.prior_status).weak().small());
+    }
 }
 
 /// The plugin-registry method id for a GUI algorithm (for option-scope filtering).

@@ -133,3 +133,21 @@ opt-crossover = Crossover-Rate
 opt-crossover-hint = Nur Perturbation: Wahrscheinlichkeit, dass eine Runde zwei archivierte Spiele rekombiniert statt zu zerstören/reparieren. 0 = aus.
 opt-neural-scale = Stärke des neuronalen Priors
 opt-neural-scale-hint = β-Skalierung des neuronalen Zug-Priors; Idealwert ≈ 4. Gilt nur mit geladenem Prior.
+
+# Panel für den neuronalen Prior (Feature `neural`)
+prior-section = Neuronaler Prior
+prior-none = Keiner
+prior-bundled = Mitgeliefert
+prior-corpus = Korpus
+prior-tabula-rasa = Tabula rasa
+prior-file = Datei
+prior-none-hint = Reines NRPA — kein gelernter Zug-Prior.
+prior-bundled-hint = Der mitgelieferte From-scratch-Prior — sofort, ohne Training, ohne menschliche Rekorde.
+prior-corpus-hint = Trainiert einen Prior auf den mitgelieferten menschlichen Rekorden (~40 s auf der CPU).
+prior-tabula-rasa-hint = Training von Grund auf durch Expert Iteration — ohne Rekorde. Hier Minuten; ein echter Lauf gehört auf die CLI.
+prior-file-hint = Einen zuvor gespeicherten Prior laden (safetensors).
+btn-load-prior = Laden…
+btn-cancel-training = Training abbrechen
+prior-status-training = Prior wird trainiert…
+prior-status-ready = Prior bereit ✓
+prior-status-error = Fehler: { $error }

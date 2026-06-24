@@ -133,3 +133,21 @@ opt-crossover = Crossover-percentage
 opt-crossover-hint = Alleen perturbatie: kans dat een ronde twee gearchiveerde spellen hercombineert in plaats van vernietigen/herstellen. 0 = uit.
 opt-neural-scale = Sterkte van de neurale prior
 opt-neural-scale-hint = β-schaal van de neurale zet-prior; optimaal ≈ 4. Alleen van toepassing met een geladen prior.
+
+# Paneel voor de neurale prior (functie `neural`)
+prior-section = Neurale prior
+prior-none = Geen
+prior-bundled = Meegeleverd
+prior-corpus = Corpus
+prior-tabula-rasa = Tabula rasa
+prior-file = Bestand
+prior-none-hint = Gewone NRPA — geen geleerde zet-prior.
+prior-bundled-hint = De meegeleverde from-scratch-prior — direct, zonder training of menselijke records.
+prior-corpus-hint = Traint een prior op de meegeleverde menselijke records (~40 s op CPU).
+prior-tabula-rasa-hint = Traint vanaf nul met Expert Iteration — zonder records. Hier minuten; een serieuze run hoort op de CLI.
+prior-file-hint = Laad een eerder opgeslagen prior (safetensors).
+btn-load-prior = Laden…
+btn-cancel-training = Training annuleren
+prior-status-training = Prior wordt getraind…
+prior-status-ready = Prior gereed ✓
+prior-status-error = Fout: { $error }

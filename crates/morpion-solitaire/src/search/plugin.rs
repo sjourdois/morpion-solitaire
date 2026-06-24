@@ -732,6 +732,10 @@ pub fn registry() -> &'static Registry {
 mod tests {
     use super::*;
 
+    // Tests that read or mutate the process-global registry values must not run
+    // concurrently (the values map is shared, and Rust runs tests in parallel).
+    static REG_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn core_methods_registered() {
         let reg = registry();
@@ -757,6 +761,7 @@ mod tests {
 
     #[test]
     fn defaults_match_resolved_hooks() {
+        let _g = REG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // The registry's resolved hook values equal the spec defaults when unset.
         let reg = registry();
         assert_eq!(reg.clamp(), Some(3.0));
@@ -780,6 +785,7 @@ mod tests {
 
     #[test]
     fn set_value_round_trips_through_hooks() {
+        let _g = REG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Writing the map changes what the hooks resolve; restore defaults after so
         // the process-global registry isn't left perturbed for other tests.
         let reg = registry();

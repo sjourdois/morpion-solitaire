@@ -133,3 +133,21 @@ opt-crossover = Crossover rate
 opt-crossover-hint = Perturbation only: chance a round recombines two archived games instead of destroy/repair. 0 = off.
 opt-neural-scale = Neural prior strength
 opt-neural-scale-hint = β scale for the neural move prior; sweet spot ≈ 4. Only applies when a prior is loaded.
+
+# Neural prior panel (feature `neural`)
+prior-section = Neural prior
+prior-none = None
+prior-bundled = Bundled
+prior-corpus = Corpus
+prior-tabula-rasa = Tabula rasa
+prior-file = File
+prior-none-hint = Plain NRPA — no learned move prior.
+prior-bundled-hint = The shipped from-scratch prior — instant, no training, no human records.
+prior-corpus-hint = Train a prior on the bundled human records (~40 s on CPU).
+prior-tabula-rasa-hint = Train from scratch by Expert Iteration — no records. Minutes here; a serious run belongs on the CLI.
+prior-file-hint = Load a prior saved earlier (safetensors).
+btn-load-prior = Load…
+btn-cancel-training = Cancel training
+prior-status-training = Training the prior…
+prior-status-ready = Prior ready ✓
+prior-status-error = Error: { $error }

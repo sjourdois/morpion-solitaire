@@ -133,3 +133,21 @@ opt-crossover = Tasso di crossover
 opt-crossover-hint = Solo perturbazione: probabilità che un round ricombini due partite archiviate invece di distruggere/riparare. 0 = disattivato.
 opt-neural-scale = Forza del prior neurale
 opt-neural-scale-hint = Scala β del prior neurale delle mosse; ottimo ≈ 4. Si applica solo con un prior caricato.
+
+# Pannello del prior neurale (funzione `neural`)
+prior-section = Prior neurale
+prior-none = Nessuno
+prior-bundled = Incluso
+prior-corpus = Corpus
+prior-tabula-rasa = Tabula rasa
+prior-file = File
+prior-none-hint = NRPA semplice — nessun prior di mosse appreso.
+prior-bundled-hint = Il prior «from scratch» incluso — istantaneo, senza addestramento né record umani.
+prior-corpus-hint = Addestra un prior sui record umani inclusi (~40 s su CPU).
+prior-tabula-rasa-hint = Addestra da zero con Expert Iteration — senza record. Qui minuti; un run serio va sulla CLI.
+prior-file-hint = Carica un prior salvato in precedenza (safetensors).
+btn-load-prior = Carica…
+btn-cancel-training = Annulla addestramento
+prior-status-training = Addestramento del prior…
+prior-status-ready = Prior pronto ✓
+prior-status-error = Errore: { $error }
