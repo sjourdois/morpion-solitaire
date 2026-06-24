@@ -978,7 +978,9 @@ fn playout(
         // position coder once so canonical() isn't recomputed for every move.
         // Unseen codes have weight exp(0)=1 exactly (when β is off), so we skip
         // the transcendental for them — the common case while the policy is sparse.
-        let coder = sym.move_coder();
+        // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
+        // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
+        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
         weights.clear();
         // Feature-space path (φ-B): logit = (w[code] + θ·φ)/τ. Takes precedence.
         #[cfg(feature = "neural")]
@@ -1139,7 +1141,9 @@ fn adapt(
         // Softmax over the legal moves, read BEFORE this step's update (each step
         // touches distinct codes, so the running policy is clean). One coder per
         // position; code each move once. Unseen codes contribute exp(0)=1 (β off).
-        let coder = sym.move_coder();
+        // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
+        // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
+        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
         codes.clear();
         codes.extend(moves.iter().map(|m| move_code(&coder, scratch, m, local)));
         exps.clear();
@@ -1352,7 +1356,9 @@ fn macro_playout(
         if moves.is_empty() {
             break;
         }
-        let coder = sym.move_coder();
+        // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
+        // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
+        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
         // Action set: single moves first, then legal macros.
         codes.clear();
         codes.extend(moves.iter().map(|mv| move_code(&coder, scratch, mv, local)));
@@ -1461,7 +1467,9 @@ fn macro_adapt(
         if moves.is_empty() {
             break;
         }
-        let coder = sym.move_coder();
+        // Symmetry-invariant coder, or the identity-frame coder when symmetry is off
+        // (move_coder() mins over all 8 hashes, but --no-symmetry only maintains hashes[0]).
+        let coder = if sym_on { sym.move_coder() } else { sym.move_coder_id() };
         codes.clear();
         codes.extend(moves.iter().map(|mv| move_code(&coder, scratch, mv, local)));
         insts.clear();

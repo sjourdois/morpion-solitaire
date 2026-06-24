@@ -307,6 +307,23 @@ impl SymmetryHashes {
             pos_in_code: position_in_code(),
         }
     }
+
+    /// Build a [`MoveCoder`] for the **identity frame only** — the `--no-symmetry`
+    /// path. It codes against `hashes[0]` (maintained by [`toggle_identity`]) with the
+    /// identity transform, ignoring the other 7 hashes (which `toggle_identity` leaves
+    /// stale). No symmetry folding: a weight learnt in one orientation does NOT transfer
+    /// to its images. Must be used instead of [`move_coder`](Self::move_coder) whenever
+    /// symmetry is off, because `move_coder` mins over all 8 (then-stale) hashes.
+    pub fn move_coder_id(&self) -> MoveCoder {
+        MoveCoder {
+            cmin: self.hashes[0],
+            k: self.k,
+            n: (self.k + 1) / 2,
+            active: [0u8; 8], // transform 0 = identity
+            len: 1,
+            pos_in_code: position_in_code(),
+        }
+    }
 }
 
 /// Symmetry-invariant move coder bound to one position (built by
@@ -383,6 +400,28 @@ mod tests {
         assert_eq!(p, m.pos);
         assert_eq!(end, line_min_endpoint(&m.line, n));
         assert_eq!(d, m.line.dir as u8);
+    }
+
+    /// Regression: the `--no-symmetry` path maintains only `hashes[0]` (via
+    /// `toggle_identity`); the other 7 go stale. `move_coder_id` must code from
+    /// `hashes[0]` + the identity transform alone, so two states with the same identity
+    /// hash but different stale hashes yield the SAME code. The bug was the no-symmetry
+    /// loops using `move_coder`, which mins over all 8 hashes and so leaked the stale
+    /// ones into the policy code.
+    #[test]
+    fn move_coder_id_ignores_stale_hashes() {
+        let state = GameState::new(Variant::T5);
+        let m = legal_moves(&state)[0];
+        let mut a = SymmetryHashes::new(9);
+        let mut b = SymmetryHashes::new(9);
+        a.toggle_identity((1, 2));
+        b.toggle_identity((1, 2)); // identical hashes[0]
+        b.hashes[3] ^= 0xdead_beef_u64; // a stale hash differs (never read in identity mode)
+        assert_eq!(
+            a.move_coder_id().code(&m),
+            b.move_coder_id().code(&m),
+            "identity-frame code must not depend on the stale hashes"
+        );
     }
 
     #[test]

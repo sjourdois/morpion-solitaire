@@ -294,6 +294,13 @@ impl MorpionApp {
         // GUI's source of truth for them). `set_value` rejects any value whose variant
         // no longer matches its spec, so a stale entry after a spec change is ignored.
         for spec in crate::search::plugin::registry().options() {
+            // Don't restore a persisted experimental value unless the experimental
+            // surface is enabled: a lab-only knob set in a past session must not
+            // silently drive a normal run (the engine reads the values map directly).
+            if !experimental && crate::search::plugin::registry().is_option_experimental(spec.key)
+            {
+                continue;
+            }
             if let Some(v) = get(&format!("opt:{}", spec.key))
                 .and_then(|s| serde_json::from_str::<crate::search::plugin::OptionValue>(&s).ok())
             {
@@ -1900,11 +1907,16 @@ impl MorpionApp {
                 .changed()
             {
                 crate::search::plugin::set_experimental(self.experimental);
-                // Turning it off can hide the current engine — fall back to NRPA.
-                let cur = controls::algo_id(self.algo);
-                if !crate::search::plugin::registry().method_visible(cur) {
-                    self.algo = SearchAlgo::Nrpa;
-                    self.coerce_start_point();
+                if !self.experimental {
+                    // Reset experimental knobs to defaults so a value set while the
+                    // surface was on stops driving the engine once it's hidden.
+                    crate::search::plugin::registry().reset_experimental_values();
+                    // Turning it off can hide the current engine — fall back to NRPA.
+                    let cur = controls::algo_id(self.algo);
+                    if !crate::search::plugin::registry().method_visible(cur) {
+                        self.algo = SearchAlgo::Nrpa;
+                        self.coerce_start_point();
+                    }
                 }
             }
             // Threads.
