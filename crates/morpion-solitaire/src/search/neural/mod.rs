@@ -19,6 +19,9 @@ pub mod feat;
 pub mod features;
 pub mod global_features;
 pub mod net;
+// The neural registry plugins (move prior, feature-space head, PUCT), co-located here
+// with the engine they wire in. The framework itself lives in `search::plugin`.
+pub mod plugin;
 pub mod position;
 pub mod puct;
 pub mod selfplay;
@@ -32,9 +35,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use rustc_hash::FxHashMap;
 
 use crate::game::{moves::Move, state::GameState};
-// The neural *plugins* (registration) live under `search::plugin::{nrpa::neural_bias,
-// nrpa::feature_space, puct}`; this module is the neural *engine* they wire in.
-use crate::search::plugin::{self, BiasModifier};
+// The neural *plugins* (registration) live in the sibling `plugin` submodule; this
+// module is the neural *engine* they wire in. The framework is `search::plugin`.
+use crate::search::plugin::{registry, BiasModifier, OptionValue};
 use crate::search::SearchState;
 use features::PatchKey;
 use net::{MovePrior, NeuralPrior, ValuePredictor};
@@ -88,7 +91,7 @@ thread_local! {
 /// `neural-scale` option — the same value the [`NeuralBias`] reads. Used by tabula-rasa
 /// to anneal the scale across Expert-Iteration rounds.
 pub fn set_scale(scale: f64) {
-    plugin::registry().set_value("neural-scale", plugin::OptionValue::Float(scale));
+    registry().set_value("neural-scale", OptionValue::Float(scale));
 }
 
 /// Restore the default prior strength (see [`set_scale`]).
@@ -167,7 +170,7 @@ static UNIFORM_PRIOR: UniformPrior = UniformPrior;
 /// policy (uniform if none) and the `c-puct` option, with rollout-grounded leaves.
 /// Shared by the PUCT method (CLI) and the GUI dispatch.
 pub fn run_puct_armed(search: Arc<SearchState>, variant: crate::game::rules::Variant) {
-    let c_puct = plugin::registry().value_f64("c-puct", 1.5);
+    let c_puct = registry().value_f64("c-puct", 1.5);
     // A value net armed (--value-net) ⇒ value-guided leaves; otherwise rollout leaves.
     let value = armed_value();
     let cfg = puct::PuctConfig {
@@ -200,7 +203,7 @@ impl BiasModifier for NeuralBias {
         let Some(prior) = guard.as_ref() else {
             return; // disarmed between resolve and call — treat as all-zero
         };
-        let scale = plugin::registry().value_f64("neural-scale", DEFAULT_SCALE);
+        let scale = registry().value_f64("neural-scale", DEFAULT_SCALE);
         let generation = GENERATION.load(Ordering::Relaxed);
         BIAS_CACHE.with(|cell| {
             let mut cache = cell.borrow_mut();
@@ -237,8 +240,8 @@ impl BiasModifier for NeuralBias {
         });
     }
 }
-/// The neural move-bias modifier, wired into the registry by the `neural_bias` plugin
-/// (`search::plugin::nrpa::neural_bias`).
+/// The neural move-bias modifier, wired into the registry by the `NeuralBiasPlugin`
+/// (`search::neural::plugin`).
 pub static NEURAL_BIAS: NeuralBias = NeuralBias;
 
 /// Convenience API to load, persist, and arm a move prior — the plumbing the CLI/GUI
@@ -421,9 +424,9 @@ mod tests {
     #[test]
     fn feat_warm_reproduces_frozen_prior() {
         let _g = ARM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let reg = plugin::registry();
+        let reg = registry();
         prior::install(prior::bundled(Variant::T5));
-        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(true));
+        reg.set_value("feat-adapt", OptionValue::Toggle(true));
         let scale = reg.value_f64("neural-scale", DEFAULT_SCALE);
 
         feat::restart(); // seeds this thread's warm θ₀ = scale·head
@@ -447,7 +450,7 @@ mod tests {
             );
         }
 
-        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(false));
+        reg.set_value("feat-adapt", OptionValue::Toggle(false));
         prior::arm(None);
     }
 
@@ -457,9 +460,9 @@ mod tests {
     #[test]
     fn feat_adapt_updates_head_finitely() {
         let _g = ARM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let reg = plugin::registry();
+        let reg = registry();
         prior::install(prior::bundled(Variant::T5));
-        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(true));
+        reg.set_value("feat-adapt", OptionValue::Toggle(true));
         feat::restart();
 
         let st = GameState::new(Variant::T5);
@@ -485,7 +488,7 @@ mod tests {
             "the chosen move's logit should rise at least as much as the mean"
         );
 
-        reg.set_value("feat-adapt", plugin::OptionValue::Toggle(false));
+        reg.set_value("feat-adapt", OptionValue::Toggle(false));
         prior::arm(None);
     }
 }

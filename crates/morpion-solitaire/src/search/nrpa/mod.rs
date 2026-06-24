@@ -18,6 +18,13 @@
 //! [Edelkamp2016]: https://github.com/sjourdois/morpion-solitaire/blob/main/docs/BIBLIOGRAPHY.md
 //! [Mouret2015]: https://github.com/sjourdois/morpion-solitaire/blob/main/docs/BIBLIOGRAPHY.md
 //! [Shaw1998]: https://github.com/sjourdois/morpion-solitaire/blob/main/docs/BIBLIOGRAPHY.md
+
+// Registry plugins co-located with this engine (the framework lives in `search::plugin`):
+// the NRPA-family core (method + adapt + symmetry coding), and perturbation + crossover.
+pub mod plugin;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod perturbation;
+
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::Ordering, Arc};
 
