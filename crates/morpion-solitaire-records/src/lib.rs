@@ -81,6 +81,11 @@ pub const RECORDS: &[(&str, &str, &str)] = &[
         include_str!("../records/5T/akiyama145.json"),
     ),
     (
+        "smj 139 (self-found)",
+        "smj139",
+        include_str!("../records/5T/smj139.json"),
+    ),
+    (
         "Rosin 82 (5D)",
         "rosin82",
         include_str!("../records/5D/rosin82.json"),

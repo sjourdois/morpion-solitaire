@@ -1,0 +1,4 @@
+# Generated at runtime — only the scripts are tracked.
+admindev-audit.log
+.state-*
+global-best-*.msr
