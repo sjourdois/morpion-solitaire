@@ -3,6 +3,7 @@ pub mod bounds;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod checkpoint;
 pub mod nrpa;
+pub mod plugin;
 pub mod symmetry;
 pub mod systematic;
 
