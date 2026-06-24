@@ -13,13 +13,11 @@
 //! single source of truth the CLI/GUI write and the engine reads. Adding a plugin is one
 //! file plus a line in [`all_plugins`].
 
-mod beam;
-mod nrpa;
-mod systematic;
-#[cfg(not(target_arch = "wasm32"))]
-mod perturbation;
-#[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
-mod puct;
+// This module is the plugin *framework* only (traits, the [`Registry`], declarative
+// options, the experimental gate, the hooks). Each plugin's *registration* lives with
+// its engine: `search::beam`, `search::systematic`, `search::macros`,
+// `search::nrpa::{plugin,perturbation}`, `search::neural::plugin`. [`all_plugins`]
+// gathers them.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -453,30 +451,34 @@ pub trait Plugin: Sync {
 }
 
 /// Every plugin compiled into this build, in a sensible registration order (the
-/// dependency resolver in [`registry`] re-orders as needed). Adding a plugin = one new
-/// file plus one line here.
+/// dependency resolver in [`registry`] re-orders as needed). Each plugin lives with its
+/// engine module; this is the one place that enumerates them. Adding a plugin = one new
+/// `*_PLUGIN` static next to its engine, plus one line here.
 fn all_plugins() -> Vec<&'static dyn Plugin> {
+    use crate::search::{beam, nrpa, systematic};
     #[allow(unused_mut)]
     let mut v: Vec<&'static dyn Plugin> = vec![
-        &nrpa::NRPA_PLUGIN,
+        &nrpa::plugin::NRPA_PLUGIN,
         &systematic::SYSTEMATIC_PLUGIN,
         &beam::BEAM_PLUGIN,
-        &nrpa::symmetry::SYMMETRY_PLUGIN,
-        &nrpa::adapt::ADAPT_PLUGIN,
+        &nrpa::plugin::SYMMETRY_PLUGIN,
+        &nrpa::plugin::ADAPT_PLUGIN,
     ];
     // Perturbation (OS threads) + its crossover modifier + macros are native-only.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        v.push(&perturbation::PERTURBATION_PLUGIN);
-        v.push(&perturbation::crossover::CROSSOVER_PLUGIN);
-        v.push(&nrpa::macros::MACROS_PLUGIN);
+        use crate::search::macros;
+        v.push(&nrpa::perturbation::PERTURBATION_PLUGIN);
+        v.push(&nrpa::perturbation::CROSSOVER_PLUGIN);
+        v.push(&macros::MACROS_PLUGIN);
     }
     // The neural prior + feature-space head + PUCT (feature `neural`, native-only).
     #[cfg(all(feature = "neural", not(target_arch = "wasm32")))]
     {
-        v.push(&nrpa::neural_bias::NEURAL_BIAS_PLUGIN);
-        v.push(&nrpa::feature_space::FEATURE_SPACE_PLUGIN);
-        v.push(&puct::PUCT_PLUGIN);
+        use crate::search::neural;
+        v.push(&neural::plugin::NEURAL_BIAS_PLUGIN);
+        v.push(&neural::plugin::FEATURE_SPACE_PLUGIN);
+        v.push(&neural::plugin::PUCT_PLUGIN);
     }
     v
 }
