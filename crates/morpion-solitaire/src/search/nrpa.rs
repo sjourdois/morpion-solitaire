@@ -436,6 +436,99 @@ const PERTURB_MIN_SECS: f64 = 2.0;
 #[cfg(not(target_arch = "wasm32"))]
 const PERTURB_MAX_SECS: f64 = 30.0;
 
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// The crossover rate for this thread's perturbation loop (`--crossover`).
+    /// `-1` ⇒ unset (default off); `≥0` is the configured rate.
+    static XOVER_OVERRIDE: std::cell::Cell<f64> = const { std::cell::Cell::new(-1.0) };
+}
+
+/// Set the crossover rate (`-1` to clear ⇒ default off). The perturbation loop runs
+/// on the calling thread, so call this at the top of that thread (the CLI does, to
+/// apply the configured `--crossover` rate per-run; tests use it too).
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)] // used by the CLI and the crossover test
+pub fn set_crossover_override(rate: f64) {
+    XOVER_OVERRIDE.with(|c| c.set(rate));
+}
+
+/// Probability that a perturbation round does a **crossover** of two archived games
+/// instead of destroy/repair of one (`--crossover`, default 0 = off). The new
+/// recombination lever: it can reach combinations a single-game destroy/repair can't.
+#[cfg(not(target_arch = "wasm32"))]
+fn perturb_crossover() -> f64 {
+    let o = XOVER_OVERRIDE.with(|c| c.get());
+    if o >= 0.0 {
+        o
+    } else {
+        0.0
+    }
+}
+
+/// Is `m` playable in `st` right now: its placed point empty, the line's four other
+/// cells occupied, and the line not conflicting with a drawn one.
+#[cfg(not(target_arch = "wasm32"))]
+fn move_playable(st: &GameState, m: &Move, line_len: u8) -> bool {
+    use crate::game::rules::TouchMode;
+    if st.board.contains(m.pos) {
+        return false;
+    }
+    for (k, cell) in m.line.positions(line_len).enumerate() {
+        if k as u8 != m.line_pos && !st.board.contains(cell) {
+            return false;
+        }
+    }
+    let max_overlap = match st.variant.touch_mode {
+        TouchMode::Touching => 1,
+        TouchMode::Disjoint => 0,
+    };
+    !st.line_index.conflicts(&m.line, line_len - 1 - max_overlap)
+}
+
+/// Genetic-style crossover of two valid games: pool their move sets and salvage a
+/// valid game by replaying the pool in a random valid order, dropping any pooled
+/// move not playable (line incomplete or conflicting) at its turn. The result
+/// reuses compatible substructure from both parents — exploration a single-game
+/// destroy/repair can't reach — and is a valid game by construction. Perturbation
+/// then repairs/extends it.
+#[cfg(not(target_arch = "wasm32"))]
+fn crossover_games<R: rand::Rng>(
+    g1: &[Move],
+    g2: &[Move],
+    variant: crate::game::rules::Variant,
+    rng: &mut R,
+) -> Vec<Move> {
+    use rand::seq::SliceRandom;
+    use std::collections::HashSet;
+    let line_len = variant.len();
+    let mut seen = HashSet::new();
+    let mut pool: Vec<Move> = Vec::new();
+    for &m in g1.iter().chain(g2) {
+        if seen.insert((m.pos, m.line.origin, m.line.dir as u8, m.line_pos)) {
+            pool.push(m);
+        }
+    }
+    pool.shuffle(rng);
+    let mut st = GameState::new(variant);
+    let mut progress = true;
+    while progress {
+        progress = false;
+        let mut i = 0;
+        while i < pool.len() {
+            if move_playable(&st, &pool[i], line_len) {
+                let m = pool.swap_remove(i);
+                if !st.apply(m) {
+                    return st.history; // grid overflow — keep what we have
+                }
+                progress = true;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    st.history
+}
+
 /// Archive (population) memory: instead of a single annealing point, keep a
 /// diverse pool of high games and perturb a random one each round. The archive
 /// keeps every distinct game whose score is within `WINDOW` of the best seen
@@ -614,6 +707,19 @@ fn perturbation_search(
         // order so the destroyed suffix covers a different region each round.
         let parent: Vec<Move> = if archive.is_empty() {
             Vec::new()
+        } else if archive.len() >= 2 && rng.random::<f64>() < perturb_crossover() {
+            // Crossover: recombine two archived games into a valid game, then reorder
+            // for a varied destroy region. A long recombination is a candidate in its
+            // own right (the repair may not reproduce it if much is destroyed), so
+            // record it before perturbing.
+            let a = &archive[rng.random_range(0..archive.len())];
+            let b = &archive[rng.random_range(0..archive.len())];
+            let merged = crossover_games(a, b, variant, &mut rng);
+            if merged.len() > max_score {
+                max_score = merged.len();
+                search.record_best(merged.len() as u32, merged.clone());
+            }
+            random_extension(&merged, &cross, line_len, &mut rng)
         } else {
             let g = archive[rng.random_range(0..archive.len())].clone();
             random_extension(&g, &cross, line_len, &mut rng)
@@ -1044,6 +1150,31 @@ mod tests {
     use crate::game::moves::legal_moves;
     use crate::game::{rules::Variant, state::GameState};
     use std::time::Duration;
+
+    /// Crossover of two valid games is itself a valid game: every move replays
+    /// legally from the cross. (Validity by construction; this guards it.)
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn crossover_yields_a_valid_game() {
+        use crate::game::io::import_save;
+        let recs: Vec<Vec<Move>> = morpion_solitaire_records::RECORDS
+            .iter()
+            .filter_map(|r| import_save(r.2).ok())
+            .filter(|g| g.variant == Variant::T5)
+            .map(|g| g.history)
+            .take(2)
+            .collect();
+        assert_eq!(recs.len(), 2, "need two 5T records");
+        let mut rng = rand::rng();
+        let g = crossover_games(&recs[0], &recs[1], Variant::T5, &mut rng);
+        assert!(!g.is_empty());
+        let mut st = GameState::new(Variant::T5);
+        for &mv in &g {
+            assert!(legal_moves(&st).contains(&mv), "crossover move illegal at replay");
+            assert!(st.apply(mv));
+        }
+        assert_eq!(st.history.len(), g.len());
+    }
 
     /// Warm-start experiment: pre-train the NRPA policy on the Rosin-178 record,
     /// then compare WARM-started vs COLD (blank) NRPA over `NRPA_RUNS` runs each.
