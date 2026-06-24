@@ -8,7 +8,7 @@ pub mod systematic;
 
 use crate::game::moves::Move;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     Arc, RwLock,
 };
 use std::time::Duration;
@@ -35,6 +35,12 @@ pub struct SearchState {
     /// Successive record improvements: (score, elapsed since search start).
     pub records: RwLock<Vec<(u32, Duration)>>,
     start_time: RwLock<Option<Instant>>,
+    /// Soft cap on an NRPA island's policy size (number of entries); `0` = no cap.
+    /// When an island's policy grows past this, it restarts from a fresh policy at
+    /// the next recursion boundary — bounding memory in-process (the unbounded
+    /// policy is otherwise what makes a long, deep run exhaust RAM). Config, not
+    /// search state, so it survives [`reset`](Self::reset).
+    pub max_policy_entries: AtomicUsize,
 }
 
 impl SearchState {
@@ -49,6 +55,7 @@ impl SearchState {
             exhausted: AtomicBool::new(false),
             records: RwLock::new(Vec::new()),
             start_time: RwLock::new(None),
+            max_policy_entries: AtomicUsize::new(0),
         })
     }
 

@@ -144,12 +144,31 @@ struct SearchArgs {
     /// Auto-checkpoint interval (same files as the GUI).
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     checkpoint_interval: Option<Duration>,
+    /// Directory for the auto-checkpoint (default: the GUI/XDG data dir). Set an
+    /// explicit dir to run independent searches without their checkpoints colliding.
+    #[arg(long, value_name = "DIR")]
+    checkpoint_dir: Option<PathBuf>,
     /// Resume from a checkpoint file (the engine is read from the file).
     #[arg(long, value_name = "FILE")]
     resume: Option<PathBuf>,
-    /// Write the best game here (otherwise stdout). Always the msr format.
+    /// Write the best game here (otherwise stdout). Always the msr format. Updated
+    /// as the run improves (not only at exit), so it stays fresh for a long run.
     #[arg(long, short = 'o', value_name = "FILE")]
     out: Option<PathBuf>,
+    /// Put all run outputs (best.msr, checkpoint, progress.log) under this one dir.
+    /// Convenience: fills in --out/--checkpoint-dir/--progress-log when they're unset.
+    #[arg(long, value_name = "DIR")]
+    run_dir: Option<PathBuf>,
+    /// Append a timestamped progress line (ISO time, score, nodes) here each tick.
+    #[arg(long, value_name = "FILE")]
+    progress_log: Option<PathBuf>,
+    /// Soft RAM budget (e.g. `12G`, `500M`). An NRPA island restarts from a fresh
+    /// policy once its policy would exceed its share, bounding memory in-process.
+    #[arg(long, value_name = "SIZE", value_parser = parse_size)]
+    max_memory: Option<u64>,
+    /// Run at this process niceness (e.g. `10`, `19`) so the search yields CPU.
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    nice: Option<i32>,
     /// Keep searching past a grid overflow instead of stopping. A game that hits
     /// the fixed grid's edge is truncated — not a valid record; use only to probe.
     #[arg(long)]
@@ -250,8 +269,24 @@ fn run(cmd: Command, variant: Variant) -> Result<(), String> {
 
 // ── search ──────────────────────────────────────────────────────────────────
 
-fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
+fn cmd_search(mut a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
+    // --run-dir: gather all run outputs under one dir (only fills unset paths).
+    if let Some(dir) = a.run_dir.clone() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("run-dir {}: {e}", dir.display()))?;
+        a.out.get_or_insert_with(|| dir.join("best.msr"));
+        a.checkpoint_dir.get_or_insert_with(|| dir.clone());
+        a.progress_log.get_or_insert_with(|| dir.join("progress.log"));
+    }
+
+    // --nice: lower scheduling priority so the search yields CPU to other work.
+    if let Some(n) = a.nice {
+        match rustix::process::nice(n) {
+            Ok(got) => log::info!("niceness set to {got}"),
+            Err(e) => eprintln!("warning: could not set niceness: {e}"),
+        }
+    }
 
     if let Some(n) = a.threads {
         // Size the global rayon pool the islands/workers draw from. Best-effort:
@@ -261,7 +296,24 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
             .build_global();
     }
 
+    // Place auto-checkpoints in an explicit dir if asked, before any checkpoint I/O.
+    if let Some(dir) = &a.checkpoint_dir {
+        crate::search::checkpoint::set_dir(dir.clone());
+    }
+
     let search = SearchState::new();
+
+    // --max-memory: cap each NRPA island's policy at its share of the budget, so a
+    // long deep run restarts islands instead of exhausting RAM.
+    if let Some(bytes) = a.max_memory {
+        // ~bytes per FxHashMap<u64,f64> entry including hashbrown control/overhead.
+        const PER_ENTRY: u64 = 64;
+        let islands = a.threads.unwrap_or_else(num_cpus::get).max(1) as u64;
+        let cap = (bytes / (islands * PER_ENTRY)).max(1) as usize;
+        search.max_policy_entries.store(cap, Ordering::Relaxed);
+        log::info!("policy cap: {cap} entries/island ({islands} islands)");
+    }
+
     let t0 = Instant::now();
 
     // Graceful Ctrl-C: ask the search to stop; the monitor loop then saves.
@@ -293,6 +345,8 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
 
     // Monitor loop: print stats, enforce stop criteria, drive checkpoints.
     let mut last_ckpt = Instant::now();
+    let mut last_emitted = 0u32; // best score already written to --out
+    let mut last_progress = Instant::now();
     loop {
         let best = search.best_score.load(Ordering::Relaxed);
         let nodes = search.nodes_explored.load(Ordering::Relaxed);
@@ -320,6 +374,21 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
             }
         }
 
+        // Keep --out fresh as the best improves (a long run shouldn't only emit at
+        // exit), and append a timestamped progress line.
+        if a.out.is_some()
+            && best > last_emitted
+            && emit_best(&a, variant, &method, &search, t0).is_ok()
+        {
+            last_emitted = best;
+        }
+        if let Some(plog) = &a.progress_log {
+            if last_progress.elapsed() >= Duration::from_secs(10) {
+                last_progress = Instant::now();
+                append_progress(plog, best, nodes);
+            }
+        }
+
         if !a.quiet {
             let secs = t0.elapsed().as_secs_f64().max(1e-9);
             let line = format!(
@@ -338,7 +407,26 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
         eprintln!();
     }
 
-    // Reconstruct and emit the best game with full provenance.
+    // Final emit (same path as the periodic refresh).
+    let score = emit_best(&a, variant, &method, &search, t0)?;
+    if interrupted.load(Ordering::Relaxed) {
+        eprintln!("best: {score} moves (interrupted)");
+    } else {
+        eprintln!("best: {score} moves");
+    }
+    Ok(())
+}
+
+/// Reconstruct the best game with full provenance and write it to `--out` (or
+/// stdout when unset). Returns the score. Shared by the periodic refresh and the
+/// final emit so a long run keeps `--out` current instead of only writing at exit.
+fn emit_best(
+    a: &SearchArgs,
+    variant: Variant,
+    method: &str,
+    search: &Arc<SearchState>,
+    t0: Instant,
+) -> Result<usize, String> {
     let best_seq = search.best_sequence.read().unwrap().clone();
     if best_seq.is_empty() {
         return Err("no game found".to_owned());
@@ -353,7 +441,7 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
         source: None,
         transcribed_by: None,
         tool: Some(env!("CARGO_PKG_NAME").to_owned()),
-        method: Some(method),
+        method: Some(method.to_owned()),
         seed: a.seed,
         nodes_explored: Some(search.nodes_explored.load(Ordering::Relaxed)),
         elapsed_secs: Some(t0.elapsed().as_secs_f64()),
@@ -362,13 +450,21 @@ fn cmd_search(a: SearchArgs, cli_variant: Variant) -> Result<(), String> {
     let blob =
         io::export_save_with_meta(&state, io::unix_now(), &meta).map_err(|e| e.to_string())?;
     emit(a.out.as_deref(), &blob)?;
-    let score = state.score();
-    if interrupted.load(Ordering::Relaxed) {
-        eprintln!("best: {score} moves (interrupted)");
-    } else {
-        eprintln!("best: {score} moves");
-    }
-    Ok(())
+    Ok(state.score())
+}
+
+/// Append a timestamped progress line (`<unix_secs>\tscore=N\tnodes=M`) to `path`.
+fn append_progress(path: &std::path::Path, score: u32, nodes: u64) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("{now}\tscore={score}\tnodes={nodes}\n");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
 }
 
 /// Spawn the chosen engine on a background thread. Returns the effective variant
@@ -800,4 +896,42 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         .parse::<f64>()
         .map(|v| Duration::from_secs_f64(v * mult as f64))
         .map_err(|_| format!("invalid duration: {s}"))
+}
+
+/// Total system RAM in bytes (Linux, via `/proc/meminfo`); `None` elsewhere.
+fn total_ram_bytes() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb: u64 = info
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(kb * 1024)
+}
+
+/// Parse a byte size like `512`, `500M`, `12G` (K/M/G = 1024-based), or a percentage
+/// of total RAM like `75%`, into bytes.
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if let Some(pct) = s.strip_suffix('%') {
+        let pct: f64 = pct
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid percentage: {s}"))?;
+        let total = total_ram_bytes()
+            .ok_or_else(|| "cannot read total RAM (/proc/meminfo) for a % budget".to_owned())?;
+        return Ok((total as f64 * pct / 100.0) as u64);
+    }
+    let (num, mult) = match s.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&s[..s.len() - 1], 1u64 << 10),
+        Some('M') => (&s[..s.len() - 1], 1u64 << 20),
+        Some('G') => (&s[..s.len() - 1], 1u64 << 30),
+        _ => (s, 1),
+    };
+    num.trim()
+        .parse::<f64>()
+        .map(|v| (v * mult as f64) as u64)
+        .map_err(|_| format!("invalid size: {s}"))
 }

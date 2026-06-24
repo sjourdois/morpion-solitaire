@@ -972,6 +972,15 @@ fn nrpa(
         return Vec::new();
     }
 
+    // Memory bound: once this island's policy outgrows the cap, unwind the whole
+    // restart (every level returns immediately) so the island loop starts over with
+    // a fresh, empty policy. The global best is recorded as games are found, so the
+    // restart loses nothing. `0` = no cap.
+    let cap = search.max_policy_entries.load(Ordering::Relaxed);
+    if cap > 0 && policy.len() > cap {
+        return Vec::new();
+    }
+
     if level == 0 {
         return playout(policy, scratch, base_sym, search);
     }
