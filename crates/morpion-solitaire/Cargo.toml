@@ -22,9 +22,9 @@ path = "src/main.rs"
 [dependencies]
 morpion-solitaire-record = { path = "../morpion-solitaire-record", version = "0.1" }
 morpion-solitaire-records = { path = "../morpion-solitaire-records", version = "0.1" }
-egui = "0.34"
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"] }
-egui_extras = { version = "0.34", features = ["image"] }
+egui = { version = "0.34", optional = true }
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"], optional = true }
+egui_extras = { version = "0.34", features = ["image"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -34,10 +34,10 @@ rayon = "1"
 rand = "0.10"
 web-time = "1"
 log = "0.4"
-unic-langid = { version = "0.9", features = ["macros"] }
-rust-embed = { version = "8", features = ["debug-embed"] }
-i18n-embed = { version = "0.16", features = ["fluent-system"] }
-i18n-embed-fl = "0.10"
+unic-langid = { version = "0.9", features = ["macros"], optional = true }
+rust-embed = { version = "8", features = ["debug-embed"], optional = true }
+i18n-embed = { version = "0.16", features = ["fluent-system"], optional = true }
+i18n-embed-fl = { version = "0.10", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
@@ -54,8 +54,8 @@ resvg = "0.47"          # rasterise the SVG renderer to PNG (CLI `show --png`)
 # backend blocks on a tiny executor, so it works without the app hosting a
 # runtime (the `tokio` feature would need a running tokio reactor). rfd 0.17
 # dropped the old `async-std` feature in favour of `pollster`.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
-arboard = "3"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"], optional = true }
+arboard = { version = "3", optional = true }
 
 # The browser build needs a tiny slice of the web platform for "save to file"
 # (no OS dialog/filesystem exists): a `Blob` downloaded via a synthetic anchor.
@@ -75,3 +75,20 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "HtmlAnchorElement",
 ] }
+
+[features]
+# The desktop/web GUI (egui/eframe). On by default; build the headless CLI-only
+# binary — no GUI/windowing deps, so it cross-compiles and runs on minimal servers
+# — with `--no-default-features`. The search/CLI/record output need none of this.
+default = ["gui"]
+gui = [
+    "dep:egui",
+    "dep:eframe",
+    "dep:egui_extras",
+    "dep:rfd",
+    "dep:arboard",
+    "dep:unic-langid",
+    "dep:rust-embed",
+    "dep:i18n-embed",
+    "dep:i18n-embed-fl",
+]
