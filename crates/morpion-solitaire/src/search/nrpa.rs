@@ -1250,7 +1250,7 @@ fn build_base_sym(state: &GameState) -> SymmetryHashes {
     s
 }
 
-// ===== Macro-actions (docs/macro-actions.md) =====
+// ===== Macro-actions =====
 // When the `macros` option is on (5T only), the playout/adapt sample over {legal
 // single moves} ∪ {legal macros} — multi-move motifs mined from records — so NRPA
 // composes over a coarser horizon. A self-contained path (macro_nrpa/macro_playout/

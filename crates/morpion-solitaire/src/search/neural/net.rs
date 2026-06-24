@@ -33,9 +33,9 @@ pub trait MovePrior {
     fn biases(&self, features: &[Vec<f32>]) -> Vec<f64>;
 }
 
-/// A pluggable source of per-move feature vectors `φ(s,m)` for feature-space NRPA
-/// (`docs/feature-space-nrpa.md`): the adapt rule `θ += α_θ(φ_chosen − Σ p φ)` is
-/// written against this trait, so only *how φ is produced* varies. [`NeuralPrior`]'s
+/// A pluggable source of per-move feature vectors `φ(s,m)` for feature-space NRPA:
+/// the adapt rule `θ += α_θ(φ_chosen − Σ p φ)` is written against this trait, so
+/// only *how φ is produced* varies. [`NeuralPrior`]'s
 /// impl returns the frozen net's penultimate activation over the move's local patch.
 pub trait FeatureSource: Send + Sync {
     /// Feature dimension `d` (= |θ|).

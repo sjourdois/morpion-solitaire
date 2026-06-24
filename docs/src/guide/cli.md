@@ -9,7 +9,9 @@ morpion-solitaire <command> --help
 ```
 
 A global `--variant 5T|5D|4T|4D` (default `5T`) applies where it isn't read from
-a file.
+a file. A global `--experimental` reveals the lab-only engines and tuning options
+(`--algo puct`, the neural feature-space knobs, `--macros`); they are hidden and
+rejected without it. See [experimental methods](../internals/algorithms.md#experimental-methods).
 
 ## `search`
 
